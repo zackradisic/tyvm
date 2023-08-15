@@ -1,0 +1,21 @@
+#+title: Todo
+
+* TODO [0/6]
+** TODO globals are static so can make this an integer index
+** TODO get rid of heap allocations on =read_args()=
+** TODO don't clone callf rames (see =call()=)
+** TODO compact =Value= representation
+** TODO Make type alias declarations lazyily evaluated
+Problem is something like this:
+#+begin_src typescript
+type IsFunnyNum<V = 69> = V extends 69 ? true : false;
+
+type result = IsFunnyNum;
+#+end_src
+
+I mean even what we have right now
+#+begin_src typescript
+type Main = Print<"HI">
+#+end_src
+** TODO Make ir repr more compact
+some places where we can box stuff

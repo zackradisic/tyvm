@@ -1,0 +1,12 @@
+[package]
+name = "tyvm"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+oxc_allocator = "0.1.0"
+oxc_ast = "0.1.0"
+oxc_parser = "0.1.0"
+oxc_span = "0.1.0"
