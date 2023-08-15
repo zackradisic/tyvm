@@ -3,6 +3,7 @@ pub mod compile;
 pub mod ir;
 pub mod op;
 pub use common::*;
+use compile::GLOBAL_STR;
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -35,6 +36,7 @@ pub struct VM {
 
     /// TODO: globals are static, so can make this an integer index
     globals: HashMap<String, Value>,
+    /// TODO: We .clone() the values everywhere and its terrible for perf
     fns: BTreeMap<String, Function>,
 }
 
@@ -58,6 +60,20 @@ impl VM {
             self.call_frame_mut().instr_offset += 1;
 
             match op {
+                Op::Lte => {
+                    let b = self.pop();
+                    let a = self.pop();
+                    self.push(Value::Bool(Some(
+                        a.expect_num().unwrap() <= b.expect_num().unwrap(),
+                    )))
+                }
+                Op::Eq => {
+                    let b = self.pop();
+                    let a = self.pop();
+                    self.push(Value::Bool(Some(
+                        b.expect_num().unwrap() == a.expect_num().unwrap(),
+                    )))
+                }
                 Op::Add => {
                     let b = self.pop();
                     let a = self.pop();
@@ -78,8 +94,11 @@ impl VM {
                     self.push(val);
                 }
                 Op::Pop => todo!(),
+                Op::TailCall => {
+                    self.call(true);
+                }
                 Op::Call => {
-                    self.call();
+                    self.call(false);
                 }
                 Op::SetLocal => todo!(),
                 Op::GetLocal => {
@@ -121,12 +140,25 @@ impl VM {
                     self.call_frame_mut().instr_offset = offset as usize;
                 }
                 Op::Number => self.push(Value::Number(None)),
+                Op::String => self.push(Value::String(None)),
                 Op::PopCallFrame => {
                     let return_val = self.peek(0);
                     let return_slot = self.call_frame().slot_offset;
                     self.stack[return_slot] = return_val;
                     self.stack_len = return_slot + 1;
                     self.pop_call_frame();
+                }
+                Op::MakeObj => {
+                    let count = self.read_byte();
+                    let back = count * 2;
+                    let obj_fields = BTreeMap::from_iter(
+                        self.stack[self.stack_len - back as usize..self.stack_len]
+                            .windows(2)
+                            .map(|slice| {
+                                (slice[0].clone().expect_string().unwrap(), slice[1].clone())
+                            }),
+                    );
+                    self.push(Value::Object(Some(obj_fields)));
                 }
             }
 
@@ -142,8 +174,35 @@ impl VM {
             (Value::Number(None), Value::Number(Some(_))) => false,
             (Value::Number(Some(a)), Value::Number(Some(b))) => a == b,
             (_, Value::Number(_)) => false,
+
+            (Value::Object(Some(a)), Value::Object(Some(b))) => self.extends_object(a, b),
+            (Value::Object(_), Value::Object(None)) => true,
+
+            (Value::String(Some(a)), Value::String(Some(b))) => a == b,
+            (Value::String(_), Value::String(None)) => true,
+
+            (Value::Bool(Some(a)), Value::Bool(Some(b))) => a == b,
+            (Value::Bool(_), Value::Bool(None)) => true,
             (a, b) => todo!("Unimplemented: {:?} \n{:?}", a, b),
         }
+    }
+
+    fn extends_object(&self, a: &BTreeMap<String, Value>, b: &BTreeMap<String, Value>) -> bool {
+        // If `a` has less keys than `b` then it cannot possibly subtype `b`
+        if a.len() < b.len() {
+            return false;
+        }
+
+        // `a` either has the same keys as `b` or more
+        for (key, aval) in a.iter() {
+            if let Some(bval) = b.get(key) {
+                if !self.extends(aval, bval) {
+                    return false;
+                }
+            }
+        }
+
+        true
     }
 
     fn push(&mut self, val: Value) {
@@ -173,19 +232,70 @@ impl VM {
         values
     }
 
-    fn call(&mut self) {
+    fn call(&mut self, tail_call: bool) {
         let count = self.read_byte();
-        let name = self.read_constant().expect_string().unwrap();
+        let name = self.read_global_constant().expect_string().unwrap();
+
+        println!("NAME: {:?}", name);
+        // Reuse the stack window
+        if tail_call {
+            if &name == &self.call_frame().name {
+                self.call_frame_mut().instr_offset = 0;
+                let start = self.call_frame().slot_offset;
+                if count > 0 {
+                    let base_ptr = self.stack.as_mut_ptr();
+                    // let args_slice = &self.stack[self.stack_len - count as usize..self.stack_len];
+                    // let dest_slice = &mut self.stack[start..start + count as usize];
+                    unsafe {
+                        let src_ptr = base_ptr.offset(self.stack_len as isize - count as isize);
+                        let dest_ptr = base_ptr.offset(start as isize);
+                        // This is safe because src_ptr and dest_ptr shouldn't overlap,
+                        // because if args count > 0 then we have pushed the args onto the stack
+                        std::ptr::copy_nonoverlapping(src_ptr, dest_ptr, count as usize);
+                    }
+                }
+                self.stack_len = start + count as usize + 1;
+                return;
+            }
+
+            let start = self.call_frame().slot_offset;
+            if count > 0 {
+                let base_ptr = self.stack.as_mut_ptr();
+                // let args_slice = &self.stack[self.stack_len - count as usize..self.stack_len];
+                // let dest_slice = &mut self.stack[start..start + count as usize];
+                unsafe {
+                    let src_ptr = base_ptr.offset(self.stack_len as isize - count as isize);
+                    let dest_ptr = base_ptr.offset(start as isize);
+                    // This is safe because src_ptr and dest_ptr shouldn't overlap,
+                    // because if args count > 0 then we have pushed the args onto the stack
+                    std::ptr::copy_nonoverlapping(src_ptr, dest_ptr, count as usize);
+                }
+            }
+
+            self.stack_len = start + count as usize + 1;
+            let func = self.fns.get(&name).cloned().unwrap();
+            let cur_call_frame = self.call_frame_mut();
+            cur_call_frame.chunk = func.chunk;
+            cur_call_frame.instr_offset = 0;
+            cur_call_frame.slot_offset = start;
+            cur_call_frame.name = name.to_owned();
+            return;
+        }
+
         let new_slot_offset = self.stack_len - count as usize;
-        // TODO: Clone here is terrible for perf
         let func = self.fns.get(&name).cloned().unwrap();
         self.push_call_frame(CallFrame {
             chunk: func.chunk,
             instr_offset: 0,
             slot_offset: new_slot_offset,
+            name: name.to_owned(),
         });
     }
 
+    fn read_global_constant(&mut self) -> Value {
+        let idx = self.read_byte();
+        self.fns.get(GLOBAL_STR).unwrap().chunk.constants[idx as usize].clone()
+    }
     fn read_constant(&mut self) -> Value {
         let idx = self.read_byte();
         self.call_frame_mut().chunk.constants[idx as usize].clone()
@@ -204,6 +314,7 @@ impl VM {
     }
 
     fn call_frame_local(&self, idx: u8) -> Value {
+        // Clone bad
         self.stack[self.call_frame().slot_offset + idx as usize].clone()
     }
 
@@ -226,6 +337,7 @@ impl VM {
 }
 
 /// TODO: Compact representation
+/// TODO: Clone is bad >:(
 #[derive(Clone, Debug)]
 pub enum Value {
     String(Option<String>),
@@ -240,7 +352,7 @@ impl Value {
     pub fn expect_string(self) -> Option<String> {
         match self {
             Value::String(str) => str,
-            _ => panic!(),
+            other => panic!("Got {:?}", other),
         }
     }
 
@@ -258,6 +370,7 @@ pub struct CallFrame {
     /// offset into VM stack that represents the first stack slot this function
     /// can use
     slot_offset: usize,
+    name: String,
 }
 
 fn run<'alloc>(arena: &'alloc Arena, program: &'alloc ast::Program<'alloc>) {
@@ -272,22 +385,29 @@ fn run<'alloc>(arena: &'alloc Arena, program: &'alloc ast::Program<'alloc>) {
     println!("main CODE: {}", main_fn.chunk.code.len());
     main_fn.chunk.debug_code();
     println!("\n\n");
-    fns.get("IsFunnyNum").unwrap().chunk.debug_code();
+    // fns.get("Fib").unwrap().chunk.debug_code();
+    // fns.get("Recurse").unwrap().chunk.debug_code();
+    let chunk = main_fn.chunk.clone();
 
     let mut vm = VM {
         fns: BTreeMap::from_iter(
             fns.into_iter()
-                .map(|(k, v)| (k, Function::from_compiled_function(v))),
+                .map(|(k, v)| (k, Function::from_compiled_function(v)))
+                .chain(std::iter::once((
+                    GLOBAL_STR.to_owned(),
+                    Function::from_compiled_function(main_fn),
+                ))),
         ),
         stack: unsafe { std::mem::transmute([0u8; 32768]) },
         stack_len: 0,
-        call_frame_stack: unsafe { std::mem::transmute([0u8; 65536]) },
+        call_frame_stack: unsafe { std::mem::transmute([0u8; 90112]) },
         call_frame_len: 0,
         globals: HashMap::new(),
     };
 
     vm.push_call_frame(CallFrame {
-        chunk: main_fn.chunk,
+        name: GLOBAL_STR.to_owned(),
+        chunk,
         instr_offset: 0,
         slot_offset: 0,
     });
@@ -297,7 +417,8 @@ fn run<'alloc>(arena: &'alloc Arena, program: &'alloc ast::Program<'alloc>) {
 
 fn main() {
     let allocator = oxc_allocator::Allocator::default();
-    let source = std::fs::read_to_string("./main.ts").unwrap();
+    let source = std::fs::read_to_string("./fib.ts").unwrap();
+    // let source = std::fs::read_to_string("./fib.ts").unwrap();
     let parser = oxc_parser::Parser::new(
         &allocator,
         &source,

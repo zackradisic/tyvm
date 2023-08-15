@@ -9,7 +9,7 @@ use oxc_ast::ast::*;
 
 use crate::op::{Chunk, Op};
 
-const GLOBAL_STR: &'static str = "__tyvm_global";
+pub const GLOBAL_STR: &'static str = "__tyvm_global";
 const UNINIT_STR: &'static str = "uninitialized memory string if you see this its bad";
 
 pub trait Compile<'alloc> {
@@ -167,22 +167,17 @@ impl<'alloc> Compiler<'alloc> {
     }
 
     fn compile_ident(&mut self, ident: &ir::Ident<'alloc>) {
-        match ident.0 {
-            TSTypeName::IdentifierName(name) => {
-                let name_str: &str = &name.name;
-                if let Some((op, idx)) = self.find_ident(&name.name) {
-                    self.push_op(op);
-                    self.push_u8(idx);
-                    return;
-                }
-                if let Some(constant_idx) = self.globals.get(name_str) {
-                    self.push_bytes(Op::GetGlobal as u8, *constant_idx as u8);
-                    return;
-                }
-                panic!("Unknown ident: {:?}", name)
-            }
-            TSTypeName::QualifiedName(_) => todo!(),
+        let name_str: &str = ident.name();
+        if let Some((op, idx)) = self.find_ident(name_str) {
+            self.push_op(op);
+            self.push_u8(idx);
+            return;
         }
+        if let Some(constant_idx) = self.globals.get(name_str) {
+            self.push_bytes(Op::GetGlobal as u8, *constant_idx as u8);
+            return;
+        }
+        panic!("Unknown ident: {:?}", name_str)
     }
 
     fn patch_jump(&mut self, instr_idx: u16, patch_idx: usize) {
@@ -230,36 +225,35 @@ impl<'alloc> Compiler<'alloc> {
 
     fn compile_expr(&mut self, expr: &ir::Expr<'alloc>) {
         match expr {
-            ir::Expr::Number => self.push_op(Op::Number),
-            ir::Expr::If(if_expr) => {
-                self.compile_cond(
-                    &if_expr.check_type,
-                    &if_expr.extends_type,
-                    &if_expr.then,
-                    &if_expr.r#else,
-                )
-                // self.compile_expr(&if_expr.check_type);
-                // self.compile_expr(&if_expr.extends_type);
-
-                // self.push_op(Op::Extends);
-
-                // let jump_to_else_branch_if_false_instr_idx = self.cur_fn_mut().chunk.code.len();
-                // self.push_bytes(0, 0);
-
-                // self.compile_expr(&if_expr.then);
-                // self.push_op(Op::Jump);
-                // let skip_else_branch_idx = self.cur_fn_mut().chunk.code.len();
-                // self.push_bytes(0, 0);
-
-                // let else_starting_idx = self.cur_fn_mut().chunk.code.len();
-                // self.patch_jump(
-                //     else_starting_idx as u16,
-                //     jump_to_else_branch_if_false_instr_idx,
-                // );
-                // self.compile_expr(&if_expr.r#else);
-                // let end_of_else_idx = self.cur_fn_mut().chunk.code.len();
-                // self.patch_jump(end_of_else_idx as u16, skip_else_branch_idx);
+            // TODO: fast path for object lit
+            ir::Expr::ObjectLit(obj_lit) => {
+                for (k, v) in obj_lit.fields.iter() {
+                    self.push_constant(Value::String(Some(k.name().to_string())));
+                    self.compile_expr(v);
+                }
+                let count = obj_lit.fields.len();
+                self.push_bytes(Op::MakeObj as u8, count as u8);
             }
+            ir::Expr::Object(obj) => {
+                for (k, v) in obj.fields.iter() {
+                    self.push_constant(Value::String(Some(k.name().to_string())));
+                    self.compile_expr(v);
+                }
+                let count = obj.fields.len();
+                self.push_bytes(Op::MakeObj as u8, count as u8);
+            }
+            ir::Expr::Number => {
+                self.push_op(Op::Number);
+            }
+            ir::Expr::String => {
+                self.push_op(Op::String);
+            }
+            ir::Expr::If(if_expr) => self.compile_cond(
+                &if_expr.check_type,
+                &if_expr.extends_type,
+                &if_expr.then,
+                &if_expr.r#else,
+            ),
             ir::Expr::Identifier(ident) => self.compile_ident(ident),
             ir::Expr::StringLiteral(str_lit) => {
                 self.push_constant(Value::String(Some(str_lit.value.to_string())));
@@ -278,6 +272,18 @@ impl<'alloc> Compiler<'alloc> {
                         self.push_op(Op::Add);
                         return;
                     }
+                    "Eq" => {
+                        assert_eq!(2, call.args.len());
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::Eq);
+                        return;
+                    }
+                    "Lte" => {
+                        assert_eq!(2, call.args.len());
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::Lte);
+                        return;
+                    }
                     _ => {}
                 }
 
@@ -290,6 +296,7 @@ impl<'alloc> Compiler<'alloc> {
                         self.push_bytes(Op::Print as u8, count);
                     }
                     _ => {
+                        println!("NAME: {:?}", call.name());
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
                         let name_str: &str = &call.name();
                         if let Some(func_global_constant_idx) = self
@@ -297,10 +304,17 @@ impl<'alloc> Compiler<'alloc> {
                             .get(name_str)
                             .and_then(|func| func.global_constant_idx)
                         {
-                            self.push_bytes(Op::Call as u8, count);
+                            self.push_bytes(
+                                if call.tail_call {
+                                    Op::TailCall
+                                } else {
+                                    Op::Call
+                                } as u8,
+                                count,
+                            );
                             self.push_u8(func_global_constant_idx as u8);
                         } else {
-                            panic!("Unknown function name!")
+                            panic!("Unknown function name! {:?}", name_str)
                         }
                     }
                 }
@@ -378,7 +392,9 @@ impl<'a, 'alloc> Iterator for LocalsIter<'a, 'alloc> {
         if self.i >= self.locals.count as u16 {
             return None;
         }
-        Some(self.locals.stack[self.i as usize].name)
+        let ret = Some(self.locals.stack[self.i as usize].name);
+        self.i += 1;
+        ret
     }
 }
 
@@ -388,7 +404,9 @@ impl<'a, 'alloc> DoubleEndedIterator for LocalsIter<'a, 'alloc> {
         if end_idx_i32 < 0 {
             return None;
         }
-        Some(self.locals.stack[end_idx_i32 as usize].name)
+        let ret = Some(self.locals.stack[end_idx_i32 as usize].name);
+        self.i += 1;
+        ret
     }
 }
 impl<'a, 'alloc> ExactSizeIterator for LocalsIter<'a, 'alloc> {

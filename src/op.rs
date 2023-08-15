@@ -5,6 +5,8 @@ use crate::Value;
 pub enum Op {
     // 2 stack operands
     Add = 0,
+    Eq,
+    Lte,
     // 2 stack operands
     Intersect,
     // 2 stack operands
@@ -16,12 +18,16 @@ pub enum Op {
     Pop,
     // N stack operands (args) + 1 stack operand (fn ident) + 1 instr for count
     Call,
+    TailCall,
     // 2 args, 2 jump instrs
     Extends,
     PanicExtends,
     Jump,
     Number,
+    String,
     PopCallFrame,
+    // next instr is fields
+    MakeObj,
     SetLocal,
     GetLocal,
     SetGlobal,
@@ -81,8 +87,17 @@ impl Chunk {
             let op: Op = self.code[i].into();
             i += 1;
             match op {
+                Op::Lte => {
+                    println!("{} LTE", i);
+                }
+                Op::Eq => {
+                    println!("{} EQ", i);
+                }
                 Op::Number => {
                     println!("{} Number", i);
+                }
+                Op::String => {
+                    println!("{} String", i);
                 }
                 Op::Add => {
                     println!("{} ADD", i);
@@ -100,14 +115,14 @@ impl Chunk {
                     println!("{} CONST: {:?}", i, self.constants[idx as usize]);
                 }
                 Op::Pop => todo!(),
-                Op::Call => {
+                Op::TailCall | Op::Call => {
                     let count = self.code[i];
                     i += 1;
                     let name_idx = self.code[i];
                     i += 1;
                     println!(
-                        "{} Call {:?} {:?}",
-                        i, count, self.constants[name_idx as usize]
+                        "{} {:?} {:?} {:?}",
+                        i, op, count, self.constants[name_idx as usize]
                     )
                 }
                 Op::SetLocal => {
@@ -147,6 +162,11 @@ impl Chunk {
                 }
                 Op::PopCallFrame => {
                     println!("{} POP CALL FRAME", i);
+                }
+                Op::MakeObj => {
+                    let count = self.code[i];
+                    i += 1;
+                    println!("{} Make obj {:?}", i, count);
                 }
             }
         }
