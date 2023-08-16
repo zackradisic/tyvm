@@ -5,6 +5,7 @@ use crate::Value;
 pub enum Op {
     // 2 stack operands
     Add = 0,
+    Sub,
     Eq,
     Lte,
     // 2 stack operands
@@ -101,6 +102,9 @@ impl Chunk {
                 }
                 Op::Add => {
                     println!("{} ADD", i);
+                }
+                Op::Sub => {
+                    println!("{} SUB", i);
                 }
                 Op::Intersect => todo!(),
                 Op::Union => todo!(),

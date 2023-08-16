@@ -272,6 +272,12 @@ impl<'alloc> Compiler<'alloc> {
                         self.push_op(Op::Add);
                         return;
                     }
+                    "Sub" => {
+                        assert_eq!(2, call.args.len());
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::Sub);
+                        return;
+                    }
                     "Eq" => {
                         assert_eq!(2, call.args.len());
                         call.args.iter().for_each(|arg| self.compile_expr(arg));

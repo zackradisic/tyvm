@@ -56,7 +56,7 @@ impl VM {
                 call_frame.chunk.code[call_frame.instr_offset].into()
             };
 
-            println!("Running OP: {:?}", op);
+            // println!("Running OP: {:?}", op);
             self.call_frame_mut().instr_offset += 1;
 
             match op {
@@ -72,6 +72,13 @@ impl VM {
                     let a = self.pop();
                     self.push(Value::Bool(Some(
                         b.expect_num().unwrap() == a.expect_num().unwrap(),
+                    )))
+                }
+                Op::Sub => {
+                    let b = self.pop();
+                    let a = self.pop();
+                    self.push(Value::Number(Some(
+                        a.expect_num().unwrap() - b.expect_num().unwrap(),
                     )))
                 }
                 Op::Add => {
@@ -206,6 +213,11 @@ impl VM {
     }
 
     fn push(&mut self, val: Value) {
+        // unsafe {
+        //     let ptr = self.stack.as_mut_ptr().offset(self.stack_len as isize);
+        //     // *ptr = val;
+        //     std::ptr::write(ptr, val);
+        // }
         self.stack[self.stack_len] = val;
         self.stack_len += 1;
     }
@@ -236,7 +248,6 @@ impl VM {
         let count = self.read_byte();
         let name = self.read_global_constant().expect_string().unwrap();
 
-        println!("NAME: {:?}", name);
         // Reuse the stack window
         if tail_call {
             if &name == &self.call_frame().name {
@@ -417,7 +428,7 @@ fn run<'alloc>(arena: &'alloc Arena, program: &'alloc ast::Program<'alloc>) {
 
 fn main() {
     let allocator = oxc_allocator::Allocator::default();
-    let source = std::fs::read_to_string("./fib.ts").unwrap();
+    let source = std::fs::read_to_string("./shittyfib.ts").unwrap();
     // let source = std::fs::read_to_string("./fib.ts").unwrap();
     let parser = oxc_parser::Parser::new(
         &allocator,
