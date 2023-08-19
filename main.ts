@@ -15,8 +15,10 @@ import { Print, Add, Lte, Eq } from "./std";
 // };
 // type Main = Print<bar extends foo ? "good vm" : "bad vm">;
 
-type Recurse<X> = Eq<X, 2> extends true ? X : Recurse<Add<X, 1>>;
-type Main = Print<Recurse<0>>;
+// type Recurse<X> = Eq<X, 2> extends true ? X : Recurse<Add<X, 1>>;
+// type Main = Print<Recurse<0>>;
+
+type Main = { hello: "NICE" } & { hello: string };
 
 // type MakeString<S extends string> = `${S}hello`;
 // type LoopAddKeys<
@@ -35,17 +37,17 @@ type Main = Print<Recurse<0>>;
 //       >;
 //     };
 
-type Loop<
-  I extends number,
-  MaxIters extends number,
-  Obj extends { value: number }
-> = I extends MaxIters
-  ? Obj
-  : Loop<Add<I, 1>, MaxIters, { value: Add<Obj["value"], 1> }>;
+// type Loop<
+//   I extends number,
+//   MaxIters extends number,
+//   Obj extends { value: number }
+// > = I extends MaxIters
+//   ? Obj
+//   : Loop<Add<I, 1>, MaxIters, { value: Add<Obj["value"], 1> }>;
 
-type foo = { hi: string; hello: boolean; []: "nice" };
+// type foo = { hi: string; hello: boolean; []: "nice" };
 
-type lmao = foo & { lmao: foo };
+// type lmao = foo & { lmao: foo };
 
-type fn = () => "HI";
-type wtf = fn & foo;
+// type fn = () => "HI";
+// type wtf = fn & foo;

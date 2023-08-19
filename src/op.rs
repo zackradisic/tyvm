@@ -106,7 +106,11 @@ impl Chunk {
                 Op::Sub => {
                     println!("{} SUB", i);
                 }
-                Op::Intersect => todo!(),
+                Op::Intersect => {
+                    let count = self.code[i];
+                    i += 1;
+                    println!("{} INTERSECT: {}", i, count)
+                }
                 Op::Union => todo!(),
                 Op::Print => {
                     let count = self.code[i];

@@ -1,5 +1,6 @@
 use std::{
     alloc::{alloc, Layout},
+    borrow::Cow,
     ffi::c_void,
     ptr,
 };
@@ -11,13 +12,14 @@ impl ObjectField {
         unsafe { (*self.0).as_slice() }
     }
 }
+
 impl From<(*mut StringRef, Value)> for ObjectField {
     fn from((str_ref, val): (*mut StringRef, Value)) -> Self {
         Self(str_ref, val)
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Object {
     /// INVARIANT: must be lexographically ordered so binary search works
     pub fields: Vec<ObjectField>,
@@ -34,6 +36,21 @@ impl Object {
     }
 }
 
+impl std::fmt::Debug for Object {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut f = f.debug_struct("Object");
+        for ObjectField(key, val) in self.fields.iter() {
+            let str_key = unsafe { key.as_ref().unwrap().to_string() };
+            // unsafe {
+            //     let k = key.as_ref().unwrap();
+            //     let str_key = k.as_slice();
+            f.field(&str_key, &val);
+            // }
+        }
+        f.finish()
+    }
+}
+
 impl<A: Into<ObjectField>> FromIterator<A> for Object {
     fn from_iter<T: IntoIterator<Item = A>>(iter: T) -> Self {
         let mut fields = iter.into_iter().map(|a| a.into()).collect::<Vec<_>>();
@@ -42,7 +59,7 @@ impl<A: Into<ObjectField>> FromIterator<A> for Object {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy)]
 pub struct HeapString {
     pub ptr: *mut u8,
     pub len: usize,
@@ -65,7 +82,17 @@ impl HeapString {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+impl std::fmt::Debug for HeapString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // f.debug_tuple("HeapString").field(&self.as_slice()).finish()
+        f.debug_tuple("HeapString")
+            .field(&self.as_slice())
+            // .field(&self.to_string())
+            .finish()
+    }
+}
+
+#[derive(Copy, Clone)]
 pub struct InlinedString {
     pub tag_and_len: u8,
     pub chars: [u8; 15],
@@ -90,7 +117,16 @@ impl InlinedString {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+impl std::fmt::Debug for InlinedString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("InlinedString")
+            .field(&self.as_slice())
+            // .field(&self.to_string())
+            .finish()
+    }
+}
+
+#[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct StringRef(u128);
 
@@ -111,7 +147,15 @@ impl StringRef {
         }
     }
 
-    pub fn as_slice(&self) -> &str {
+    pub fn as_str<'a>(&'a self) -> Cow<'a, str> {
+        if self.is_inlined() {
+            self.as_inlined().to_string().into()
+        } else {
+            self.as_heap().as_slice().into()
+        }
+    }
+
+    pub fn as_slice<'a>(&'a self) -> &'a str {
         if self.is_inlined() {
             self.as_inlined_ref().as_slice()
         } else {
@@ -167,14 +211,26 @@ impl StringRef {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+impl std::fmt::Debug for StringRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_inlined() {
+            f.debug_tuple("StringRef")
+                .field(&self.as_inlined())
+                .finish()
+        } else {
+            f.debug_tuple("StringRef").field(&self.as_heap()).finish()
+        }
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct ObjRef(*mut c_void);
 impl ObjRef {
     /// 0b0000
-    pub const TAG_STR: usize = 0;
+    pub const TAG_STR: usize = 1;
     /// 0b0001
-    pub const TAG_OBJ: usize = 0;
+    pub const TAG_OBJ: usize = 2;
     /// 0b1111
     pub const TAG_MASK: usize = 15;
 
@@ -245,6 +301,18 @@ impl ObjRef {
     }
 }
 
+impl std::fmt::Debug for ObjRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_str_ref() {
+            f.debug_tuple("ObjRef")
+                .field(&self.as_str_ref_owned())
+                .finish()
+        } else {
+            f.debug_tuple("ObjRef").field(&self.as_obj_ref()).finish()
+        }
+    }
+}
+
 impl From<*mut Object> for ObjRef {
     fn from(value: *mut Object) -> Self {
         Self::from_obj(value)
@@ -289,8 +357,8 @@ impl KeywordType {
 /// # Nanboxed value
 /// Slightly modified nanbox implementation.
 ///
-/// Type-level Typescript has no way to express a NaN in the type-system,
-/// so the bit pattern for any NaN is not a number.
+/// Type-level Typescript has no way to express a NaN in the type-system, so we
+/// use a NaN bit pattern to indicate the value can be an object, boolean, etc.
 ///
 /// We require that pointers are all 16-byte aligned so
 /// there is an additional 4 bottom bits available to use.
@@ -318,7 +386,10 @@ impl std::fmt::Debug for Value {
         if self.is_num() {
             return f.debug_tuple("Value").field(&self.as_num()).finish();
         }
-        f.debug_tuple("Value").field(&self.0).finish()
+        if self.is_obj() {
+            return f.debug_tuple("Value").field(&self.as_obj_ref()).finish();
+        }
+        f.debug_tuple("Value").field(&"WTF").finish()
     }
 }
 
@@ -508,6 +579,16 @@ mod test {
 
     #[test]
     fn test_value_obj() {
+        let obj = Object { fields: vec![] }.alloc();
+        let obj_ref = ObjRef::from_obj(obj);
+        let val = Value::from_obj_ref(obj_ref);
+        assert!(val.is_obj());
+        assert!(val.as_obj_ref().is_obj());
+        assert!(!val.as_obj_ref().is_str_ref());
+    }
+
+    #[test]
+    fn test_value_obj_str() {
         let str = "foo";
         let str_layout = Layout::for_value(str.as_bytes()).align_to(16).unwrap();
         let chars = unsafe { alloc(str_layout) };
@@ -519,7 +600,7 @@ mod test {
         let field1_val = Value::from_num(420.69f64);
         let obj_fields: Vec<ObjectField> = vec![(field1_key, field1_val).into()];
         let mut obj = Object { fields: obj_fields };
-        let obj_ptr = addr_of_mut!(obj);
+        let obj_ptr = obj.alloc();
         let obj_ref = ObjRef::from_obj(obj_ptr);
 
         let value = Value::from_obj_ref(obj_ref);
@@ -528,7 +609,7 @@ mod test {
         assert!(!value.is_keyword_type());
         assert!(!value.is_num());
         let obj_ref_back = value.as_obj_ref();
-        assert_eq!(obj_ref_back.0 as usize, obj_ptr as usize);
+        assert_eq!(obj_ref_back.as_obj() as usize, obj_ptr as usize);
         // let derefed_val = unsafe { *(obj_ref_back.0 as *mut usize) };
         // assert_eq!(derefed_val, val)
     }

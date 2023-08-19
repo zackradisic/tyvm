@@ -58,7 +58,7 @@ impl VM {
                 call_frame.chunk.code[call_frame.instr_offset].into()
             };
 
-            // println!("Running OP: {:?}", op);
+            println!("Running OP: {:?}", op);
             self.call_frame_mut().instr_offset += 1;
 
             match op {
@@ -82,7 +82,9 @@ impl VM {
                     let a = self.pop();
                     self.push(Value::from_num(a.as_num() + b.as_num()))
                 }
-                Op::Intersect => todo!(),
+                Op::Intersect => {
+                    self.intersect();
+                }
                 Op::Union => todo!(),
                 Op::Print => {
                     let count = self.read_byte();
@@ -156,6 +158,7 @@ impl VM {
                             .map(|slice| (slice[0].as_str_ref(), slice[1])),
                     )
                     .alloc();
+                    self.stack_len -= back as usize;
                     self.push(Value::from_obj_ref(obj.into()));
                 }
             }
@@ -164,6 +167,48 @@ impl VM {
                 break;
             }
         }
+    }
+
+    pub fn intersect(&mut self) {
+        let count = self.read_byte();
+        let start = self.stack_len - count as usize;
+        let end = self.stack_len;
+
+        let first_obj = self.stack[start];
+        let mut new_fields: Vec<ObjectField> = first_obj.as_obj_ref().as_obj_ref().fields.clone();
+
+        for &val in &self.stack[start + 1..end] {
+            let obj_ref = val.as_obj_ref();
+            let obj = obj_ref.as_obj_ref();
+            for &ObjectField(key, val) in obj.fields.iter() {
+                // FUCK: Need string interning
+                // match new_fields.binary_search_by(|&ObjectField(k, _)| k.cmp(&key)) {
+                match new_fields.binary_search_by(|&ObjectField(k, _)| unsafe {
+                    let k1 = (*k).as_slice();
+                    let k2 = (*key).as_slice();
+                    k1.cmp(k2)
+                }) {
+                    Ok(existing) => {
+                        let existing_val = new_fields[existing].1;
+                        let insertion_ty = if self.extends(existing_val, val) {
+                            continue;
+                        } else if self.extends(val, existing_val) {
+                            val
+                        } else {
+                            Value::NEVER
+                        };
+                        new_fields[existing] = (key, insertion_ty).into();
+                    }
+                    Err(new_slot) => {
+                        new_fields.insert(new_slot, (key, val).into());
+                    }
+                }
+            }
+        }
+
+        let val = Value::from_obj_ref(ObjRef::from_obj(Object { fields: new_fields }.alloc()));
+        self.stack_len -= count as usize;
+        self.push(val);
     }
 
     pub fn extends(&self, a: Value, b: Value) -> bool {
@@ -414,8 +459,9 @@ fn run<'alloc>(arena: &'alloc Arena, program: &'alloc ast::Program<'alloc>) -> V
 
 fn main() {
     let allocator = oxc_allocator::Allocator::default();
+    let source = std::fs::read_to_string("./main.ts").unwrap();
     // let source = std::fs::read_to_string("./shittyfib.ts").unwrap();
-    let source = std::fs::read_to_string("./fib.ts").unwrap();
+    // let source = std::fs::read_to_string("./fib.ts").unwrap();
     let parser = oxc_parser::Parser::new(
         &allocator,
         &source,
@@ -431,7 +477,22 @@ fn main() {
         println!("ERRORS: {:?}", result.errors);
     }
 
-    run(&allocator, allocator.alloc(result.program));
+    let result = run(&allocator, allocator.alloc(result.program));
+    // println!("RESULT: {:?}", j);
+    assert!(!result.as_obj_ref().is_str_ref());
+    assert!(result.is_obj());
+    let obj = result.as_obj_ref();
+    let fields = &obj.as_obj_ref().fields;
+    println!(
+        "FIELDS: {:?}",
+        fields
+            .iter()
+            .map(|ObjectField(k, v)| {
+                let str = unsafe { (*(*k)).to_string() };
+                (str, v)
+            })
+            .collect::<Vec<_>>()
+    );
 }
 
 #[cfg(test)]
@@ -439,10 +500,12 @@ mod test {
     use oxc_allocator::Allocator;
     use oxc_span::SourceType;
 
-    use crate::{run, value::Value};
+    use crate::{
+        run,
+        value::{ObjRef, Object, Value},
+    };
 
-    fn run_code<'a>(alloc: &'a Allocator, source: &str) -> Value {
-        let allocator = oxc_allocator::Allocator::default();
+    fn run_code<'a>(allocator: &'a Allocator, source: &str) -> Value {
         let parser = oxc_parser::Parser::new(
             &allocator,
             &source,
@@ -459,6 +522,32 @@ mod test {
         }
 
         run(&allocator, allocator.alloc(result.program))
+    }
+
+    #[test]
+    fn intersect_subset() {
+        let allocator = Allocator::default();
+        let expected = Value::from_obj_ref(ObjRef::from_obj(Object { fields: vec![] }.alloc()));
+
+        let value = run_code(
+            &allocator,
+            "
+type FibHelper<
+  X extends number,
+  I extends number,
+  Prev extends number,
+  PrevPrev extends number
+> = Eq<X, I> extends true
+  ? Add<Prev, PrevPrev>
+  : FibHelper<X, Add<I, 1>, Add<Prev, PrevPrev>, Prev>;
+
+type Fib<X extends number> = Lte<X, 1> extends true ? X : FibHelper<X, 2, 1, 0>;
+
+type Main = Fib<50>;
+        ",
+        );
+
+        assert_eq!(value, expected);
     }
 
     #[test]

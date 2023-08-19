@@ -1,7 +1,9 @@
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::num::NonZeroUsize;
 
 use crate::common::AllocBox as Box;
+use crate::ir::Expr;
 use crate::value::{ObjRef, StringRef};
 use crate::{common::*, ir, Value};
 
@@ -231,18 +233,61 @@ impl<'alloc> Compiler<'alloc> {
         self.patch_jump(end_of_else_idx as u16, skip_else_branch_idx);
     }
 
+    fn compile_make_obj<'a, I: Iterator<Item = (&'a str, &'alloc Expr<'alloc>)>>(
+        &mut self,
+        len: u8,
+        iter: I,
+    ) {
+        for (k, v) in iter {
+            self.push_constant(Value::from_obj_ref(ObjRef::alloc_new_str_ref(
+                StringRef::new(k),
+            )));
+            self.compile_expr(v);
+        }
+        let count = len;
+        self.push_bytes(Op::MakeObj as u8, count as u8);
+    }
+
     fn compile_expr(&mut self, expr: &ir::Expr<'alloc>) {
         match expr {
+            ir::Expr::Intersect(intersect) => {
+                // If all arguments are object literals we can compile this to one big MakeObj op
+                // if intersect
+                //     .types
+                //     .iter()
+                //     .all(|t| matches!(t, Expr::ObjectLit(_)))
+                // {
+                //     let mut final_values = BTreeMap::<&'alloc str, &'alloc Expr<'alloc>>::new();
+                //     for expr in intersect.types.iter() {
+                //         match expr {
+                //             Expr::ObjectLit(object_lit) => {
+                //                 for (key, val) in object_lit.fields.iter() {
+                //                     match final_values.entry(key.name()) {
+                //                         Entry::Vacant(_) => todo!(),
+                //                         Entry::Occupied(mut entry) => todo!(),
+                //                     }
+                //                 }
+                //             }
+                //             _ => unreachable!(),
+                //         }
+                //     }
+
+                //     self.compile_make_obj(
+                //         final_values.len() as u8,
+                //         final_values.iter().map(|(&k, &v)| (k, v)),
+                //     );
+                // }
+                for ty in intersect.types.iter() {
+                    self.compile_expr(ty);
+                }
+                self.push_bytes(Op::Intersect as u8, intersect.types.len() as u8);
+            }
             // TODO: fast path for object lit
             ir::Expr::ObjectLit(obj_lit) => {
-                for (k, v) in obj_lit.fields.iter() {
-                    self.push_constant(Value::from_obj_ref(ObjRef::alloc_new_str_ref(
-                        StringRef::new(k.name()),
-                    )));
-                    self.compile_expr(v);
-                }
-                let count = obj_lit.fields.len();
-                self.push_bytes(Op::MakeObj as u8, count as u8);
+                self.compile_make_obj(
+                    obj_lit.fields.len() as u8,
+                    obj_lit.fields.iter().map(|(k, &v)| (k.name(), v)),
+                );
             }
             ir::Expr::Object(obj) => {
                 for (k, v) in obj.fields.iter() {

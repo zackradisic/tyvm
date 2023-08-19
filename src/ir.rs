@@ -34,6 +34,7 @@ pub enum Expr<'ir> {
     ObjectLit(&'ir ObjectLit<'ir>),
     Call(&'ir Call<'ir>),
     If(&'ir If<'ir>),
+    Intersect(&'ir Intersect<'ir>),
 }
 
 impl<'ir> Expr<'ir> {
@@ -46,6 +47,7 @@ impl<'ir> Expr<'ir> {
             Expr::Number => true,
             Expr::String => true,
             Expr::Object(obj) => obj.can_be_object_lit(),
+            Expr::Intersect(intersect) => intersect.can_be_object_lit(),
             Expr::ObjectLit(lit) => true,
             Expr::Call(_) => false,
             Expr::If(_) => false,
@@ -84,6 +86,18 @@ pub struct If<'ir> {
     pub extends_type: Expr<'ir>,
     pub then: Expr<'ir>,
     pub r#else: Expr<'ir>,
+}
+
+#[derive(Debug)]
+pub struct Intersect<'ir> {
+    pub types: AllocVec<'ir, Expr<'ir>>,
+}
+
+impl<'ir> Intersect<'ir> {
+    /// TODO: implement this, find good heuristic (arg length, resulting field length)
+    pub fn can_be_object_lit(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, PartialEq, PartialOrd, Eq, Ord, Clone, Copy)]
@@ -228,6 +242,16 @@ impl<'ir> Transform<'ir> {
 
     fn transform_type(&self, ty: &'ir ast::TSType<'ir>, tail_call: bool) -> Expr<'ir> {
         match ty {
+            TSType::TSIntersectionType(intersect_type) => {
+                let types = AllocVec::from_iter_in(
+                    intersect_type
+                        .types
+                        .iter()
+                        .map(|t| self.transform_type(t, false)),
+                    self.arena,
+                );
+                Expr::Intersect(self.arena.alloc(Intersect { types }))
+            }
             TSType::TSTypeLiteral(lit_type) => {
                 let fields = BTreeMap::from_iter(lit_type.members.iter().map(|memb| match memb {
                     TSSignature::TSPropertySignature(prop) => {
@@ -309,7 +333,6 @@ impl<'ir> Transform<'ir> {
             TSType::TSImportType(_) => todo!(),
             TSType::TSIndexedAccessType(_) => todo!(),
             TSType::TSInferType(_) => todo!(),
-            TSType::TSIntersectionType(_) => todo!(),
             TSType::TSMappedType(_) => todo!(),
             TSType::TSQualifiedName(_) => todo!(),
             TSType::TSTemplateLiteralType(_) => todo!(),
