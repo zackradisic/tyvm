@@ -35,15 +35,17 @@ type Main = Print<Recurse<0>>;
 //       >;
 //     };
 
-// type MakeString<S extends string> = `${S}hello`;
-// type Eq<A extends number, B extends number> = true | false;
-// type Add<A extends number, B extends number> = number;
-// type Loop<
-//   I extends number,
-//   MaxIters extends number,
-//   S extends string
-// > = I extends MaxIters
-//   ? S & { myVal: "hey" }
-//   : Loop<Add<I, 1>, MaxIters, MakeString<S>>;
+type Loop<
+  I extends number,
+  MaxIters extends number,
+  Obj extends { value: number }
+> = I extends MaxIters
+  ? Obj
+  : Loop<Add<I, 1>, MaxIters, { value: Add<Obj["value"], 1> }>;
 
-// type nice = Loop<0, 5, "NICE">;
+type foo = { hi: string; hello: boolean; []: "nice" };
+
+type lmao = foo & { lmao: foo };
+
+type fn = () => "HI";
+type wtf = fn & foo;

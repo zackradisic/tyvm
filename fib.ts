@@ -12,3 +12,7 @@ type FibHelper<
 type Fib<X extends number> = Lte<X, 1> extends true ? X : FibHelper<X, 2, 1, 0>;
 
 type Main = Print<Fib<50>>;
+
+type lmao<T extends object> = "NICE";
+
+type f = lmao<{ hi: string }>;

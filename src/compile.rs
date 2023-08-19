@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::num::NonZeroUsize;
 
 use crate::common::AllocBox as Box;
+use crate::value::{ObjRef, StringRef};
 use crate::{common::*, ir, Value};
 
 use oxc_ast::ast;
@@ -77,6 +78,7 @@ pub struct Function<'alloc> {
 }
 
 pub struct Compiler<'alloc> {
+    /// TODO THis can be Value or string ptr
     globals: HashMap<String, usize>,
     functions: BTreeMap<String, Function<'alloc>>,
     current_function_name: String,
@@ -132,9 +134,13 @@ impl<'alloc> Compiler<'alloc> {
     }
 
     fn compile_fn_decl(&mut self, fn_decl: &'alloc ir::FnDecl<'alloc>) {
-        let name = fn_decl.ident.name().to_string();
-        let name_constant_idx = self.push_constant_no_op(Value::String(Some(name.clone())));
-        let prev_name = std::mem::replace(&mut self.current_function_name, name.clone());
+        let name = fn_decl.ident.name();
+        // let name_constant_idx = self.push_constant_no_op(Value::String(Some(name.clone())));
+        let str_ref = StringRef::new(name);
+        let name_constant_idx =
+            self.push_constant_no_op(Value::from_obj_ref(ObjRef::alloc_new_str_ref(str_ref)));
+        let name_string = name.to_string();
+        let prev_name = std::mem::replace(&mut self.current_function_name, name_string.clone());
         let mut func = Function {
             locals: Locals::default(),
             chunk: Chunk::default(),
@@ -143,7 +149,7 @@ impl<'alloc> Compiler<'alloc> {
         for arg in &fn_decl.params {
             func.locals.push(arg.ident.name());
         }
-        self.functions.insert(name.to_string(), func);
+        self.functions.insert(name_string, func);
         fn_decl
             .params
             .iter()
@@ -157,13 +163,15 @@ impl<'alloc> Compiler<'alloc> {
     fn compile_var_decl(&mut self, var_decl: &ir::VarDecl<'alloc>) {
         self.compile_expr(&var_decl.expr);
         self.main_chunk_mut().chunk.push_op(Op::SetGlobal);
-        let name = var_decl.ident.name().to_owned();
+        let name = var_decl.ident.name();
         let constant_idx = self
             .main_chunk_mut()
             .chunk
-            .push_constant(Value::String(Some(name.clone())));
+            .push_constant(Value::from_obj_ref(ObjRef::alloc_new_str_ref(
+                StringRef::new(name),
+            )));
         self.main_chunk_mut().chunk.push_u8(constant_idx as u8);
-        self.globals.insert(name, constant_idx);
+        self.globals.insert(name.to_owned(), constant_idx);
     }
 
     fn compile_ident(&mut self, ident: &ir::Ident<'alloc>) {
@@ -228,7 +236,9 @@ impl<'alloc> Compiler<'alloc> {
             // TODO: fast path for object lit
             ir::Expr::ObjectLit(obj_lit) => {
                 for (k, v) in obj_lit.fields.iter() {
-                    self.push_constant(Value::String(Some(k.name().to_string())));
+                    self.push_constant(Value::from_obj_ref(ObjRef::alloc_new_str_ref(
+                        StringRef::new(k.name()),
+                    )));
                     self.compile_expr(v);
                 }
                 let count = obj_lit.fields.len();
@@ -236,7 +246,9 @@ impl<'alloc> Compiler<'alloc> {
             }
             ir::Expr::Object(obj) => {
                 for (k, v) in obj.fields.iter() {
-                    self.push_constant(Value::String(Some(k.name().to_string())));
+                    self.push_constant(Value::from_obj_ref(ObjRef::alloc_new_str_ref(
+                        StringRef::new(k.name()),
+                    )));
                     self.compile_expr(v);
                 }
                 let count = obj.fields.len();
@@ -256,13 +268,15 @@ impl<'alloc> Compiler<'alloc> {
             ),
             ir::Expr::Identifier(ident) => self.compile_ident(ident),
             ir::Expr::StringLiteral(str_lit) => {
-                self.push_constant(Value::String(Some(str_lit.value.to_string())));
+                self.push_constant(Value::from_obj_ref(ObjRef::alloc_new_str_ref(
+                    StringRef::new(&str_lit.value),
+                )));
             }
             ir::Expr::BooleanLiteral(bool_lit) => {
-                self.push_constant(Value::Bool(Some(bool_lit.value)));
+                self.push_constant(Value::from_bool(bool_lit.value));
             }
             ir::Expr::NumberLiteral(num_lit) => {
-                self.push_constant(Value::Number(Some(num_lit.value)));
+                self.push_constant(Value::from_num(num_lit.value));
             }
             ir::Expr::Call(call) => {
                 match call.name() {

@@ -2,8 +2,10 @@ pub mod common;
 pub mod compile;
 pub mod ir;
 pub mod op;
+pub mod value;
 pub use common::*;
 use compile::GLOBAL_STR;
+use value::{KeywordType, ObjRef, Object, ObjectField, Value};
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -12,7 +14,7 @@ use oxc_span::SourceType;
 
 pub use oxc_ast::ast;
 
-use crate::compile::Compiler;
+use crate::{compile::Compiler, value::StringRef};
 
 #[derive(Clone)]
 pub struct Function {
@@ -34,7 +36,7 @@ pub struct VM {
     call_frame_stack: [CallFrame; 1024],
     call_frame_len: usize,
 
-    /// TODO: globals are static, so can make this an integer index
+    /// TODO: make this str ptr or value for the key
     globals: HashMap<String, Value>,
     /// TODO: We .clone() the values everywhere and its terrible for perf
     fns: BTreeMap<String, Function>,
@@ -63,37 +65,29 @@ impl VM {
                 Op::Lte => {
                     let b = self.pop();
                     let a = self.pop();
-                    self.push(Value::Bool(Some(
-                        a.expect_num().unwrap() <= b.expect_num().unwrap(),
-                    )))
+                    self.push(Value::from_bool(a.as_num() <= b.as_num()));
                 }
                 Op::Eq => {
                     let b = self.pop();
                     let a = self.pop();
-                    self.push(Value::Bool(Some(
-                        b.expect_num().unwrap() == a.expect_num().unwrap(),
-                    )))
+                    self.push(Value::from_bool(b.as_num() == a.as_num()))
                 }
                 Op::Sub => {
                     let b = self.pop();
                     let a = self.pop();
-                    self.push(Value::Number(Some(
-                        a.expect_num().unwrap() - b.expect_num().unwrap(),
-                    )))
+                    self.push(Value::from_num(a.as_num() - b.as_num()))
                 }
                 Op::Add => {
                     let b = self.pop();
                     let a = self.pop();
-                    self.push(Value::Number(Some(
-                        a.expect_num().unwrap() + b.expect_num().unwrap(),
-                    )))
+                    self.push(Value::from_num(a.as_num() + b.as_num()))
                 }
                 Op::Intersect => todo!(),
                 Op::Union => todo!(),
                 Op::Print => {
                     let count = self.read_byte();
                     let args = self.read_args(count, true);
-                    self.push(Value::Never);
+                    self.push(Value::NEVER);
                     println!("{:?}", args);
                 }
                 Op::Constant => {
@@ -116,21 +110,19 @@ impl VM {
                 Op::SetGlobal => {
                     let val = self.pop();
                     let name = self.read_constant();
-                    self.globals.insert(name.expect_string().unwrap(), val);
+                    let raw_str_ref = unsafe { *name.as_obj_ref().as_str_ref() };
+                    self.globals.insert(raw_str_ref.to_string(), val);
                 }
                 Op::GetGlobal => {
-                    let name = self.read_constant();
-                    let val = self
-                        .globals
-                        .get(&name.expect_string().unwrap())
-                        .unwrap()
-                        .clone();
+                    let name_val = self.read_constant();
+                    let name = unsafe { *name_val.as_obj_ref().as_str_ref() };
+                    let val = self.globals.get(name.as_slice()).unwrap().clone();
                     self.push(val);
                 }
                 Op::PanicExtends => {
                     let b = self.pop();
                     let a = self.pop();
-                    if !self.extends(&a, &b) {
+                    if !self.extends(a, b) {
                         panic!("Extends failed: {:?} does not extend {:?}", a, b)
                     }
                 }
@@ -138,7 +130,7 @@ impl VM {
                     let b = self.pop();
                     let a = self.pop();
                     let jump_if_not_extends = self.read_short();
-                    if !self.extends(&a, &b) {
+                    if !self.extends(a, b) {
                         self.call_frame_mut().instr_offset = jump_if_not_extends as usize
                     }
                 }
@@ -146,8 +138,8 @@ impl VM {
                     let offset = self.read_short();
                     self.call_frame_mut().instr_offset = offset as usize;
                 }
-                Op::Number => self.push(Value::Number(None)),
-                Op::String => self.push(Value::String(None)),
+                Op::Number => self.push(Value::from_keyword_type(KeywordType::Number)),
+                Op::String => self.push(Value::from_keyword_type(KeywordType::String)),
                 Op::PopCallFrame => {
                     let return_val = self.peek(0);
                     let return_slot = self.call_frame().slot_offset;
@@ -158,14 +150,13 @@ impl VM {
                 Op::MakeObj => {
                     let count = self.read_byte();
                     let back = count * 2;
-                    let obj_fields = BTreeMap::from_iter(
+                    let obj = Object::from_iter(
                         self.stack[self.stack_len - back as usize..self.stack_len]
                             .windows(2)
-                            .map(|slice| {
-                                (slice[0].clone().expect_string().unwrap(), slice[1].clone())
-                            }),
-                    );
-                    self.push(Value::Object(Some(obj_fields)));
+                            .map(|slice| (slice[0].as_str_ref(), slice[1])),
+                    )
+                    .alloc();
+                    self.push(Value::from_obj_ref(obj.into()));
                 }
             }
 
@@ -175,34 +166,49 @@ impl VM {
         }
     }
 
-    pub fn extends(&self, a: &Value, b: &Value) -> bool {
-        match (a, b) {
-            (Value::Number(Some(_)), Value::Number(None)) => true,
-            (Value::Number(None), Value::Number(Some(_))) => false,
-            (Value::Number(Some(a)), Value::Number(Some(b))) => a == b,
-            (_, Value::Number(_)) => false,
-
-            (Value::Object(Some(a)), Value::Object(Some(b))) => self.extends_object(a, b),
-            (Value::Object(_), Value::Object(None)) => true,
-
-            (Value::String(Some(a)), Value::String(Some(b))) => a == b,
-            (Value::String(_), Value::String(None)) => true,
-
-            (Value::Bool(Some(a)), Value::Bool(Some(b))) => a == b,
-            (Value::Bool(_), Value::Bool(None)) => true,
-            (a, b) => todo!("Unimplemented: {:?} \n{:?}", a, b),
+    pub fn extends(&self, a: Value, b: Value) -> bool {
+        if b == Value::NUMBER_KW {
+            return a.is_num() || a == Value::NUMBER_KW;
         }
+        if b == Value::BOOL_KW {
+            return a.is_bool() || a == Value::BOOL_KW;
+        }
+        if b == Value::STRING_KW {
+            return a == Value::STRING_KW || a.is_str();
+        }
+        if b == Value::OBJECT_KW {
+            return a == Value::OBJECT_KW || a.is_obj();
+        }
+        if b.is_num() {
+            return a == b;
+        }
+        if b.is_bool() {
+            return a == b;
+        }
+        if b.is_str() {
+            return a == b;
+        }
+        if b.is_obj() {
+            return a.is_obj()
+                && self.extends_object(a.as_obj_ref().as_obj_ref(), b.as_obj_ref().as_obj_ref());
+        }
+
+        false
     }
 
-    fn extends_object(&self, a: &BTreeMap<String, Value>, b: &BTreeMap<String, Value>) -> bool {
+    fn extends_object(&self, a: &Object, b: &Object) -> bool {
         // If `a` has less keys than `b` then it cannot possibly subtype `b`
-        if a.len() < b.len() {
+        if a.fields.len() < b.fields.len() {
             return false;
         }
 
         // `a` either has the same keys as `b` or more
-        for (key, aval) in a.iter() {
-            if let Some(bval) = b.get(key) {
+        for &ObjectField(key, aval) in a.fields.iter() {
+            if let Ok(bval_idx) = b
+                .fields
+                .binary_search_by(|ObjectField(bkey, _)| bkey.cmp(&key))
+            {
+                let bval = b.fields[bval_idx].1;
                 if !self.extends(aval, bval) {
                     return false;
                 }
@@ -234,8 +240,7 @@ impl VM {
 
     /// TODO: no heap allocation
     fn read_args(&mut self, count: u8, with_pop: bool) -> Vec<Value> {
-        let mut values: Vec<Value> =
-            vec![unsafe { std::mem::transmute([0u8; 32]) }; count as usize];
+        let mut values: Vec<Value> = vec![Value::NULL; count as usize];
         let mut i: i32 = count.saturating_sub(1) as i32;
         let values = (0..count).map(|i| self.peek(i as usize)).rev().collect();
         if with_pop {
@@ -246,11 +251,11 @@ impl VM {
 
     fn call(&mut self, tail_call: bool) {
         let count = self.read_byte();
-        let name = self.read_global_constant().expect_string().unwrap();
+        let name = self.read_global_constant().as_obj_ref();
 
         // Reuse the stack window
         if tail_call {
-            if &name == &self.call_frame().name {
+            if name == self.call_frame().name {
                 self.call_frame_mut().instr_offset = 0;
                 let start = self.call_frame().slot_offset;
                 if count > 0 {
@@ -284,7 +289,11 @@ impl VM {
             }
 
             self.stack_len = start + count as usize + 1;
-            let func = self.fns.get(&name).cloned().unwrap();
+            let func = self
+                .fns
+                .get(name.as_str_ref_owned().as_slice())
+                .cloned()
+                .unwrap();
             let cur_call_frame = self.call_frame_mut();
             cur_call_frame.chunk = func.chunk;
             cur_call_frame.instr_offset = 0;
@@ -294,7 +303,11 @@ impl VM {
         }
 
         let new_slot_offset = self.stack_len - count as usize;
-        let func = self.fns.get(&name).cloned().unwrap();
+        let func = self
+            .fns
+            .get(name.as_str_ref_owned().as_slice())
+            .cloned()
+            .unwrap();
         self.push_call_frame(CallFrame {
             chunk: func.chunk,
             instr_offset: 0,
@@ -347,44 +360,16 @@ impl VM {
     }
 }
 
-/// TODO: Compact representation
-/// TODO: Clone is bad >:(
-#[derive(Clone, Debug)]
-pub enum Value {
-    String(Option<String>),
-    Bool(Option<bool>),
-    Number(Option<f64>),
-    Object(Option<BTreeMap<String, Value>>),
-    Never,
-    Undefined,
-}
-
-impl Value {
-    pub fn expect_string(self) -> Option<String> {
-        match self {
-            Value::String(str) => str,
-            other => panic!("Got {:?}", other),
-        }
-    }
-
-    pub fn expect_num(self) -> Option<f64> {
-        match self {
-            Value::Number(num) => num,
-            _ => panic!(),
-        }
-    }
-}
-
 pub struct CallFrame {
     chunk: Chunk,
     instr_offset: usize,
     /// offset into VM stack that represents the first stack slot this function
     /// can use
     slot_offset: usize,
-    name: String,
+    name: ObjRef,
 }
 
-fn run<'alloc>(arena: &'alloc Arena, program: &'alloc ast::Program<'alloc>) {
+fn run<'alloc>(arena: &'alloc Arena, program: &'alloc ast::Program<'alloc>) -> Value {
     println!("{:#?}", program);
     let transform = ir::Transform { arena };
     let ir = arena.alloc(transform.transform_oxc(program));
@@ -409,27 +394,28 @@ fn run<'alloc>(arena: &'alloc Arena, program: &'alloc ast::Program<'alloc>) {
                     Function::from_compiled_function(main_fn),
                 ))),
         ),
-        stack: unsafe { std::mem::transmute([0u8; 32768]) },
+        stack: [Value::NULL; 1024],
         stack_len: 0,
-        call_frame_stack: unsafe { std::mem::transmute([0u8; 90112]) },
+        call_frame_stack: unsafe { std::mem::transmute([0u8; 73728]) },
         call_frame_len: 0,
         globals: HashMap::new(),
     };
 
     vm.push_call_frame(CallFrame {
-        name: GLOBAL_STR.to_owned(),
+        name: ObjRef::alloc_new_str_ref(StringRef::new_inlined(GLOBAL_STR)),
         chunk,
         instr_offset: 0,
         slot_offset: 0,
     });
 
-    vm.run()
+    vm.run();
+    vm.stack[0]
 }
 
 fn main() {
     let allocator = oxc_allocator::Allocator::default();
-    let source = std::fs::read_to_string("./shittyfib.ts").unwrap();
-    // let source = std::fs::read_to_string("./fib.ts").unwrap();
+    // let source = std::fs::read_to_string("./shittyfib.ts").unwrap();
+    let source = std::fs::read_to_string("./fib.ts").unwrap();
     let parser = oxc_parser::Parser::new(
         &allocator,
         &source,
@@ -446,4 +432,57 @@ fn main() {
     }
 
     run(&allocator, allocator.alloc(result.program));
+}
+
+#[cfg(test)]
+mod test {
+    use oxc_allocator::Allocator;
+    use oxc_span::SourceType;
+
+    use crate::{run, value::Value};
+
+    fn run_code<'a>(alloc: &'a Allocator, source: &str) -> Value {
+        let allocator = oxc_allocator::Allocator::default();
+        let parser = oxc_parser::Parser::new(
+            &allocator,
+            &source,
+            SourceType::default().with_typescript_definition(true),
+        );
+
+        let result = parser.parse();
+        if result.panicked {
+            panic!("Shit")
+        }
+
+        if result.errors.len() > 0 {
+            println!("ERRORS: {:?}", result.errors);
+        }
+
+        run(&allocator, allocator.alloc(result.program))
+    }
+
+    #[test]
+    fn fib() {
+        let allocator = Allocator::default();
+        let expected = Value::from_num(12586269025.0);
+        let value = run_code(
+            &allocator,
+            "
+type FibHelper<
+  X extends number,
+  I extends number,
+  Prev extends number,
+  PrevPrev extends number
+> = Eq<X, I> extends true
+  ? Add<Prev, PrevPrev>
+  : FibHelper<X, Add<I, 1>, Add<Prev, PrevPrev>, Prev>;
+
+type Fib<X extends number> = Lte<X, 1> extends true ? X : FibHelper<X, 2, 1, 0>;
+
+type Main = Fib<50>;
+        ",
+        );
+
+        assert_eq!(value, expected);
+    }
 }
