@@ -2,6 +2,7 @@ use std::{
     alloc::{alloc, Layout},
     borrow::Cow,
     ffi::c_void,
+    fmt::{self, Write},
     ptr,
 };
 
@@ -525,6 +526,86 @@ impl Value {
 
     pub fn is_num(self) -> bool {
         self.0 & Self::NAN != Self::NAN
+    }
+}
+
+pub struct ValueFormatterTs<'a> {
+    pub depth: usize,
+    pub pretty: bool,
+    pub buf: &'a mut String,
+    pub name: &'a str,
+}
+
+impl<'a> ValueFormatterTs<'a> {
+    pub fn new_line(&mut self) -> fmt::Result {
+        if self.pretty {
+            self.buf.write_char('\n')?;
+            for _ in 0..self.depth {
+                self.buf.write_str("  ")?
+            }
+        }
+        Ok(())
+    }
+
+    pub fn to_json(&mut self, val: Value) -> fmt::Result {
+        if self.depth == 0 {
+            write!(self.buf, "type {} = ", self.name)?;
+        }
+
+        if val.is_keyword_type() {
+            return self.buf.write_str(match val.as_keyword_type() {
+                KeywordType::Null => "null",
+                KeywordType::Undefined => "undefined",
+                KeywordType::Void => "void",
+                KeywordType::Never => "never",
+                KeywordType::String => "string",
+                KeywordType::Number => "number",
+                KeywordType::Bool => "bool",
+                KeywordType::Object => "object",
+                KeywordType::True => "true",
+                KeywordType::False => "false",
+            });
+        }
+
+        if val.is_num() {
+            return write!(self.buf, "{}", val.as_num());
+        }
+
+        if val.is_str() {
+            let str_ref = val.as_str_ref_owned();
+            let str = str_ref.as_slice();
+            return self.buf.write_str(str);
+        }
+
+        if val.is_obj() {
+            let obj_ref = val.as_obj_ref();
+            let obj = obj_ref.as_obj_ref();
+            if obj.fields.is_empty() {
+                return write!(self.buf, "{{}}");
+            }
+            write!(self.buf, "{{")?;
+            self.depth += 1;
+            let last = obj.fields.len().saturating_sub(1);
+            for (i, field) in obj.fields.iter().enumerate() {
+                self.new_line()?;
+                let key = field.0;
+                let value = field.1;
+                write!(self.buf, "{}", unsafe {
+                    (*key).as_str().escape_default().collect::<String>()
+                })?;
+                write!(self.buf, ": ")?;
+                self.to_json(value)?;
+                if i != last {
+                    write!(self.buf, ",")?;
+                }
+            }
+            self.depth -= 1;
+            self.new_line()?;
+            write!(self.buf, "}}")?;
+            return Ok(());
+        }
+
+        unreachable!("Value: {:?}", val)
     }
 }
 

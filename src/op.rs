@@ -29,6 +29,8 @@ pub enum Op {
     PopCallFrame,
     // next instr is fields
     MakeObj,
+    WriteFile,
+    ToTypescriptSource,
     SetLocal,
     GetLocal,
     SetGlobal,
@@ -88,6 +90,12 @@ impl Chunk {
             let op: Op = self.code[i].into();
             i += 1;
             match op {
+                Op::ToTypescriptSource => {
+                    println!("{} ToTypescriptSource", i)
+                }
+                Op::WriteFile => {
+                    println!("{} WriteFile", i)
+                }
                 Op::Lte => {
                     println!("{} LTE", i);
                 }

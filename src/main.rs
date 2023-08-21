@@ -14,7 +14,10 @@ use oxc_span::SourceType;
 
 pub use oxc_ast::ast;
 
-use crate::{compile::Compiler, value::StringRef};
+use crate::{
+    compile::Compiler,
+    value::{StringRef, ValueFormatterTs},
+};
 
 #[derive(Clone)]
 pub struct Function {
@@ -62,6 +65,43 @@ impl VM {
             self.call_frame_mut().instr_offset += 1;
 
             match op {
+                Op::ToTypescriptSource => {
+                    let value = self.pop();
+                    let type_name_value = self.pop();
+                    if !type_name_value.is_str() {
+                        panic!("ToTypescriptSource first arg should be a string literal")
+                    }
+                    let type_name_str_ref = type_name_value.as_str_ref_owned();
+                    let type_name = type_name_str_ref.as_slice();
+                    let mut buf = String::new();
+                    let mut ts_formatter = ValueFormatterTs {
+                        depth: 0,
+                        pretty: true,
+                        buf: &mut buf,
+                        name: type_name,
+                    };
+                    ts_formatter.to_json(value).unwrap();
+                    buf.shrink_to_fit();
+                    let len = buf.len();
+                    let leaked_buf = buf.as_mut_ptr();
+                    std::mem::forget(buf);
+                    let new_str_ref = StringRef::new_heap(leaked_buf, len);
+                    self.push(Value::from_obj_ref(ObjRef::alloc_new_str_ref(new_str_ref)));
+                }
+                Op::WriteFile => {
+                    let value_to_write = self.pop();
+                    let file_path_value = self.pop();
+                    if !file_path_value.is_str() {
+                        panic!("WriteFile path should be a string literal")
+                    }
+                    if !value_to_write.is_str() {
+                        panic!("Can only write file string values")
+                    }
+                    let file_path_str_ref = file_path_value.as_str_ref_owned();
+                    let value_str_ref = value_to_write.as_str_ref_owned();
+                    std::fs::write(file_path_str_ref.as_slice(), value_str_ref.as_slice()).unwrap();
+                    self.push(Value::NEVER);
+                }
                 Op::Lte => {
                     let b = self.pop();
                     let a = self.pop();
@@ -90,7 +130,13 @@ impl VM {
                     let count = self.read_byte();
                     let args = self.read_args(count, true);
                     self.push(Value::NEVER);
-                    println!("{:?}", args);
+                    println!(
+                        "{}",
+                        args.iter()
+                            .map(|v| format!("{:#?}", v))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    );
                 }
                 Op::Constant => {
                     let val = self.read_constant();
@@ -211,6 +257,7 @@ impl VM {
         self.push(val);
     }
 
+    /// Extends is a terrible name, think of this as `is a a subset of b`?
     pub fn extends(&self, a: Value, b: Value) -> bool {
         if b == Value::NUMBER_KW {
             return a.is_num() || a == Value::NUMBER_KW;
@@ -403,6 +450,10 @@ impl VM {
     fn pop_call_frame(&mut self) {
         self.call_frame_len -= 1;
     }
+
+    fn top(&self) -> Value {
+        self.stack[self.stack_len - 1]
+    }
 }
 
 pub struct CallFrame {
@@ -454,14 +505,14 @@ fn run<'alloc>(arena: &'alloc Arena, program: &'alloc ast::Program<'alloc>) -> V
     });
 
     vm.run();
-    vm.stack[0]
+    *vm.globals.get("Main").unwrap()
 }
 
 fn main() {
     let allocator = oxc_allocator::Allocator::default();
-    let source = std::fs::read_to_string("./main.ts").unwrap();
+    // let source = std::fs::read_to_string("./main.ts").unwrap();
     // let source = std::fs::read_to_string("./shittyfib.ts").unwrap();
-    // let source = std::fs::read_to_string("./fib.ts").unwrap();
+    let source = std::fs::read_to_string("./fib.ts").unwrap();
     let parser = oxc_parser::Parser::new(
         &allocator,
         &source,
@@ -478,21 +529,21 @@ fn main() {
     }
 
     let result = run(&allocator, allocator.alloc(result.program));
-    // println!("RESULT: {:?}", j);
-    assert!(!result.as_obj_ref().is_str_ref());
-    assert!(result.is_obj());
-    let obj = result.as_obj_ref();
-    let fields = &obj.as_obj_ref().fields;
-    println!(
-        "FIELDS: {:?}",
-        fields
-            .iter()
-            .map(|ObjectField(k, v)| {
-                let str = unsafe { (*(*k)).to_string() };
-                (str, v)
-            })
-            .collect::<Vec<_>>()
-    );
+    println!("RESULT: {:?}", result);
+    // assert!(!result.as_obj_ref().is_str_ref());
+    // assert!(result.is_obj());
+    // let obj = result.as_obj_ref();
+    // let fields = &obj.as_obj_ref().fields;
+    // println!(
+    //     "FIELDS: {:?}",
+    //     fields
+    //         .iter()
+    //         .map(|ObjectField(k, v)| {
+    //             let str = unsafe { (*(*k)).to_string() };
+    //             (str, v)
+    //         })
+    //         .collect::<Vec<_>>()
+    // );
 }
 
 #[cfg(test)]

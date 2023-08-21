@@ -360,6 +360,20 @@ impl<'alloc> Compiler<'alloc> {
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
                         self.push_bytes(Op::Print as u8, count);
                     }
+                    "WriteFile" => {
+                        if count != 2 {
+                            panic!("BAD COUNT")
+                        }
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::WriteFile);
+                    }
+                    "ToTypescriptSource" => {
+                        if count != 2 {
+                            panic!("BAD COUNT")
+                        }
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::ToTypescriptSource);
+                    }
                     _ => {
                         println!("NAME: {:?}", call.name());
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
