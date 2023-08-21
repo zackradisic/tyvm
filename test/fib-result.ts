@@ -1,0 +1,1 @@
+type FibonacciResult = 1

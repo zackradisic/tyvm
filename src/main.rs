@@ -61,7 +61,11 @@ impl VM {
                 call_frame.chunk.code[call_frame.instr_offset].into()
             };
 
-            println!("Running OP: {:?}", op);
+            println!(
+                "{} Running OP: {:?}",
+                self.call_frame().name.as_str_ref_owned().as_slice(),
+                op,
+            );
             self.call_frame_mut().instr_offset += 1;
 
             match op {
@@ -149,6 +153,10 @@ impl VM {
                 Op::Call => {
                     self.call(false);
                 }
+                Op::CallMain => {
+                    let main_name = self.read_constant();
+                    self.call_main(main_name.as_obj_ref())
+                }
                 Op::SetLocal => todo!(),
                 Op::GetLocal => {
                     let slot = self.read_byte();
@@ -162,7 +170,7 @@ impl VM {
                     self.globals.insert(raw_str_ref.to_string(), val);
                 }
                 Op::GetGlobal => {
-                    let name_val = self.read_constant();
+                    let name_val = self.read_global_constant();
                     let name = unsafe { *name_val.as_obj_ref().as_str_ref() };
                     let val = self.globals.get(name.as_slice()).unwrap().clone();
                     self.push(val);
@@ -341,10 +349,24 @@ impl VM {
         values
     }
 
-    fn call(&mut self, tail_call: bool) {
-        let count = self.read_byte();
-        let name = self.read_global_constant().as_obj_ref();
+    fn call_main(&mut self, name: ObjRef) {
+        // let mut count: u8 = 0;
+        // for arg in std::env::args() {
+        //     let str_ref = StringRef::new(&arg);
+        //     let obj_ref = ObjRef::alloc_new_str_ref(str_ref);
+        //     let value = Value::from_obj_ref(obj_ref);
+        //     self.push(value);
+        //     count += 1;
+        // }
+        let count: u8 = 1;
+        let str_ref = StringRef::new(&"FUCK");
+        let obj_ref = ObjRef::alloc_new_str_ref(str_ref);
+        let value = Value::from_obj_ref(obj_ref);
+        self.push(value);
+        self.call_impl(name, count, false);
+    }
 
+    fn call_impl(&mut self, name: ObjRef, count: u8, tail_call: bool) {
         // Reuse the stack window
         if tail_call {
             if name == self.call_frame().name {
@@ -406,6 +428,13 @@ impl VM {
             slot_offset: new_slot_offset,
             name: name.to_owned(),
         });
+    }
+
+    fn call(&mut self, tail_call: bool) {
+        let count = self.read_byte();
+        let name = self.read_global_constant().as_obj_ref();
+
+        self.call_impl(name, count, tail_call)
     }
 
     fn read_global_constant(&mut self) -> Value {
@@ -473,13 +502,13 @@ fn run<'alloc>(arena: &'alloc Arena, program: &'alloc ast::Program<'alloc>) -> V
     let mut compiler = Compiler::new();
     compiler.compile(ir);
 
-    let (main_fn, fns) = compiler.funcs();
-    println!("main CODE: {}", main_fn.chunk.code.len());
-    main_fn.chunk.debug_code();
+    let (global_fn, fns) = compiler.funcs();
+    println!("main CODE: {}", global_fn.chunk.code.len());
+    global_fn.chunk.debug_code(&global_fn);
     println!("\n\n");
-    // fns.get("Fib").unwrap().chunk.debug_code();
+    fns.get("Main").unwrap().chunk.debug_code(&global_fn);
     // fns.get("Recurse").unwrap().chunk.debug_code();
-    let chunk = main_fn.chunk.clone();
+    let chunk = global_fn.chunk.clone();
 
     let mut vm = VM {
         fns: BTreeMap::from_iter(
@@ -487,7 +516,7 @@ fn run<'alloc>(arena: &'alloc Arena, program: &'alloc ast::Program<'alloc>) -> V
                 .map(|(k, v)| (k, Function::from_compiled_function(v)))
                 .chain(std::iter::once((
                     GLOBAL_STR.to_owned(),
-                    Function::from_compiled_function(main_fn),
+                    Function::from_compiled_function(global_fn),
                 ))),
         ),
         stack: [Value::NULL; 1024],
@@ -505,14 +534,16 @@ fn run<'alloc>(arena: &'alloc Arena, program: &'alloc ast::Program<'alloc>) -> V
     });
 
     vm.run();
-    *vm.globals.get("Main").unwrap()
+    // *vm.globals.get("Main").unwrap()
+    Value::NULL
 }
 
 fn main() {
     let allocator = oxc_allocator::Allocator::default();
-    // let source = std::fs::read_to_string("./main.ts").unwrap();
-    // let source = std::fs::read_to_string("./shittyfib.ts").unwrap();
-    let source = std::fs::read_to_string("./fib.ts").unwrap();
+    // let source = std::fs::read_to_string("./test/main.ts").unwrap();
+    // let source = std::fs::read_to_string("./test/shittyfib.ts").unwrap();
+    let source = std::fs::read_to_string("./test/fib.ts").unwrap();
+    // let source = std::fs::read_to_string("./test/cycle.ts").unwrap();
     let parser = oxc_parser::Parser::new(
         &allocator,
         &source,

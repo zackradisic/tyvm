@@ -20,12 +20,14 @@ type FibIter<
   ? Add<Prev, PrevPrev>
   : FibIter<X, Add<I, 1>, Add<Prev, PrevPrev>, Prev>;
 
-type Main = WriteFile<
-  "./fib-result.ts",
-  ToTypescriptSource<"FibonacciResult", Fib<amount>>
->;
+type amount = 1;
 
-type amount = 40;
+// type Main<Argv extends string> = WriteFile<
+//   "./fib-result.ts",
+//   ToTypescriptSource<"FibonacciResult", Fib<amount>>
+// >;
+type Main<Argv extends string> = Print<Fib<amount>>;
+
 // type myobj = {
 //   hi: string;
 //   hello: string;

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::num::NonZeroUsize;
 
 use crate::common::AllocBox as Box;
-use crate::ir::Expr;
+use crate::ir::{Expr, LetDecl};
 use crate::value::{ObjRef, StringRef};
 use crate::{common::*, ir, Value};
 
@@ -80,7 +80,7 @@ pub struct Function<'alloc> {
 }
 
 pub struct Compiler<'alloc> {
-    /// TODO THis can be Value or string ptr
+    /// TODO Key can be Value or string ptr
     globals: HashMap<String, usize>,
     functions: BTreeMap<String, Function<'alloc>>,
     current_function_name: String,
@@ -105,8 +105,47 @@ impl<'alloc> Compiler<'alloc> {
         }
     }
     pub fn compile(&mut self, program: &'alloc ir::Program<'alloc>) {
+        // Collect globals first
+        {
+            for stmt in &program.stmts {
+                match stmt {
+                    ir::Statement::LetDecl(LetDecl::Fn(fn_decl)) => {
+                        let name = fn_decl.ident.name();
+                        let str_ref = StringRef::new(name);
+                        let name_constant_idx = self.push_constant_no_op(Value::from_obj_ref(
+                            ObjRef::alloc_new_str_ref(str_ref),
+                        ));
+                        self.functions.insert(
+                            name.to_string(),
+                            Function {
+                                locals: Locals::default(),
+                                chunk: Chunk::default(),
+                                global_constant_idx: Some(name_constant_idx),
+                            },
+                        );
+                    }
+                    ir::Statement::LetDecl(LetDecl::Var(var_decl)) => {
+                        let name = var_decl.ident.name();
+                        let str_ref = StringRef::new(name);
+                        let name_constant_idx = self.push_constant_no_op(Value::from_obj_ref(
+                            ObjRef::alloc_new_str_ref(str_ref),
+                        ));
+                        self.globals.insert(name.to_string(), name_constant_idx);
+                    }
+                    _ => (),
+                }
+            }
+        }
+
         for stmt in &program.stmts {
             self.compile_statement(stmt)
+        }
+
+        if let Some(main_fn) = self.functions.get("Main") {
+            self.push_bytes(
+                Op::CallMain as u8,
+                main_fn.global_constant_idx.unwrap() as u8,
+            );
         }
     }
 
@@ -137,21 +176,12 @@ impl<'alloc> Compiler<'alloc> {
 
     fn compile_fn_decl(&mut self, fn_decl: &'alloc ir::FnDecl<'alloc>) {
         let name = fn_decl.ident.name();
-        // let name_constant_idx = self.push_constant_no_op(Value::String(Some(name.clone())));
-        let str_ref = StringRef::new(name);
-        let name_constant_idx =
-            self.push_constant_no_op(Value::from_obj_ref(ObjRef::alloc_new_str_ref(str_ref)));
         let name_string = name.to_string();
         let prev_name = std::mem::replace(&mut self.current_function_name, name_string.clone());
-        let mut func = Function {
-            locals: Locals::default(),
-            chunk: Chunk::default(),
-            global_constant_idx: Some(name_constant_idx),
-        };
+        let func = self.functions.get_mut(name).unwrap();
         for arg in &fn_decl.params {
             func.locals.push(arg.ident.name());
         }
-        self.functions.insert(name_string, func);
         fn_decl
             .params
             .iter()
@@ -166,14 +196,8 @@ impl<'alloc> Compiler<'alloc> {
         self.compile_expr(&var_decl.expr);
         self.main_chunk_mut().chunk.push_op(Op::SetGlobal);
         let name = var_decl.ident.name();
-        let constant_idx = self
-            .main_chunk_mut()
-            .chunk
-            .push_constant(Value::from_obj_ref(ObjRef::alloc_new_str_ref(
-                StringRef::new(name),
-            )));
+        let constant_idx = *self.globals.get(name).unwrap();
         self.main_chunk_mut().chunk.push_u8(constant_idx as u8);
-        self.globals.insert(name.to_owned(), constant_idx);
     }
 
     fn compile_ident(&mut self, ident: &ir::Ident<'alloc>) {
@@ -446,8 +470,8 @@ impl<'alloc> Compiler<'alloc> {
     }
 
     pub fn funcs(mut self) -> (Function<'alloc>, BTreeMap<String, Function<'alloc>>) {
-        let main = self.functions.remove(GLOBAL_STR).unwrap();
-        (main, self.functions)
+        let global = self.functions.remove(GLOBAL_STR).unwrap();
+        (global, self.functions)
     }
 
     fn main_chunk_mut(&mut self) -> &mut Function<'alloc> {

@@ -1,4 +1,4 @@
-use crate::Value;
+use crate::{compile::Function, Value};
 
 #[derive(Clone, Debug, PartialEq)]
 #[repr(u8)]
@@ -20,6 +20,7 @@ pub enum Op {
     // N stack operands (args) + 1 stack operand (fn ident) + 1 instr for count
     Call,
     TailCall,
+    CallMain,
     // 2 args, 2 jump instrs
     Extends,
     PanicExtends,
@@ -80,7 +81,7 @@ impl Chunk {
         self.push_u8(b);
     }
 
-    pub fn debug_code(&self) {
+    pub fn debug_code(&self, globals: &Function) {
         let mut i: usize = 0;
         if self.code.is_empty() {
             return;
@@ -90,6 +91,11 @@ impl Chunk {
             let op: Op = self.code[i].into();
             i += 1;
             match op {
+                Op::CallMain => {
+                    let idx = self.code[i];
+                    i += 1;
+                    println!("{} CallMain {:?}", i, self.constants[idx as usize])
+                }
                 Op::ToTypescriptSource => {
                     println!("{} ToTypescriptSource", i)
                 }
@@ -138,7 +144,7 @@ impl Chunk {
                     i += 1;
                     println!(
                         "{} {:?} {:?} {:?}",
-                        i, op, count, self.constants[name_idx as usize]
+                        i, op, count, globals.chunk.constants[name_idx as usize]
                     )
                 }
                 Op::SetLocal => {
@@ -159,7 +165,10 @@ impl Chunk {
                 Op::GetGlobal => {
                     let idx = self.code[i];
                     i += 1;
-                    println!("{} GET GLOBAL {:?}", i, self.constants[idx as usize]);
+                    println!(
+                        "{} GET GLOBAL {:?}",
+                        i, globals.chunk.constants[idx as usize]
+                    );
                 }
                 Op::PanicExtends | Op::Extends => {
                     let skip_then = ((self.code[i] as u16) << 8) | (self.code[i + 1] as u16);
