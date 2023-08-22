@@ -17,7 +17,7 @@ pub struct Program<'ir> {
 
 #[derive(Debug)]
 pub enum Statement<'ir> {
-    LetDecl(LetDecl<'ir>),
+    LetDecl(GlobalDecl<'ir>),
     Expr(Expr<'ir>),
 }
 
@@ -35,9 +35,19 @@ pub enum Expr<'ir> {
     Call(&'ir Call<'ir>),
     If(&'ir If<'ir>),
     Intersect(&'ir Intersect<'ir>),
+    Array(&'ir Array<'ir>),
+    Tuple(&'ir Tuple<'ir>),
+    Index(&'ir Index<'ir>),
+    Let(&'ir Let<'ir>),
 }
 
 impl<'ir> Expr<'ir> {
+    pub fn as_num_lit(&self) -> Option<&'ir NumberLiteral<'ir>> {
+        match self {
+            Expr::NumberLiteral(n) => Some(n),
+            _ => None,
+        }
+    }
     pub fn is_lit(&self) -> bool {
         match self {
             Expr::Identifier(_) => false,
@@ -51,6 +61,10 @@ impl<'ir> Expr<'ir> {
             Expr::ObjectLit(lit) => true,
             Expr::Call(_) => false,
             Expr::If(_) => false,
+            Expr::Array(arr) => arr.the_type.is_lit(),
+            Expr::Tuple(tup) => tup.types.iter().all(|t| t.is_lit()),
+            Expr::Index(_) => false,
+            Expr::Let(_) => false,
         }
     }
 }
@@ -100,6 +114,31 @@ impl<'ir> Intersect<'ir> {
     }
 }
 
+#[derive(Debug)]
+pub struct Array<'ir> {
+    pub the_type: &'ir Expr<'ir>,
+}
+
+#[derive(Debug)]
+pub struct Tuple<'ir> {
+    pub types: AllocVec<'ir, &'ir Expr<'ir>>,
+}
+
+#[derive(Debug)]
+pub struct Index<'ir> {
+    pub object_ty: &'ir Expr<'ir>,
+    pub index_ty: &'ir Expr<'ir>,
+}
+
+#[derive(Debug)]
+pub struct Let<'ir> {
+    pub name: &'ir str,
+    pub cond: Option<&'ir Expr<'ir>>,
+    pub check: &'ir Expr<'ir>,
+    pub then: &'ir Expr<'ir>,
+    pub r#else: &'ir Expr<'ir>,
+}
+
 #[derive(Debug, PartialEq, PartialOrd, Eq, Ord, Clone, Copy)]
 pub struct Ident<'ir>(pub &'ir str);
 
@@ -131,7 +170,7 @@ impl<'ir> Ident<'ir> {
 }
 
 #[derive(Debug)]
-pub enum LetDecl<'ir> {
+pub enum GlobalDecl<'ir> {
     Fn(Box<'ir, FnDecl<'ir>>),
     Var(Box<'ir, VarDecl<'ir>>),
 }
@@ -218,10 +257,10 @@ impl<'ir> Transform<'ir> {
     fn transform_type_alias_decl(
         &self,
         alias_decl: &'ir ast::TSTypeAliasDeclaration<'ir>,
-    ) -> LetDecl<'ir> {
+    ) -> GlobalDecl<'ir> {
         let ident = Ident::from_binding_ident(self.arena, &alias_decl.id);
         if let Some(params) = &alias_decl.type_parameters {
-            return LetDecl::Fn(Box(self.arena.alloc(FnDecl {
+            return GlobalDecl::Fn(Box(self.arena.alloc(FnDecl {
                 ident,
                 body: self.transform_type(&alias_decl.type_annotation, false),
                 params: AllocVec::from_iter_in(
@@ -234,7 +273,7 @@ impl<'ir> Transform<'ir> {
             })));
         }
 
-        LetDecl::Var(Box(self.arena.alloc(VarDecl {
+        GlobalDecl::Var(Box(self.arena.alloc(VarDecl {
             ident,
             expr: self.transform_type(&alias_decl.type_annotation, false),
         })))
@@ -242,6 +281,42 @@ impl<'ir> Transform<'ir> {
 
     fn transform_type(&self, ty: &'ir ast::TSType<'ir>, tail_call: bool) -> Expr<'ir> {
         match ty {
+            TSType::TSIndexedAccessType(index) => Expr::Index(
+                self.arena.alloc(Index {
+                    object_ty: self
+                        .arena
+                        .alloc(self.transform_type(&index.object_type, false)),
+                    index_ty: self
+                        .arena
+                        .alloc(self.transform_type(&index.index_type, false)),
+                }),
+            ),
+            TSType::TSUnionType(_) => todo!(),
+            TSType::TSTupleType(tuple) => {
+                let elements: AllocVec<'ir, &'ir Expr<'ir>> = AllocVec::from_iter_in(
+                    tuple
+                        .element_types
+                        .iter()
+                        .map(|ty| match ty {
+                            TSTupleElement::TSType(ty) => {
+                                self.arena.alloc(self.transform_type(ty, false))
+                            }
+                            TSTupleElement::TSOptionalType(_) => todo!(),
+                            TSTupleElement::TSRestType(_) => todo!(),
+                            TSTupleElement::TSNamedTupleMember(_) => todo!(),
+                        })
+                        .map(|t| &*t),
+                    self.arena,
+                );
+
+                Expr::Tuple(self.arena.alloc(Tuple { types: elements }))
+            }
+            TSType::TSArrayType(array_ty) => {
+                let types = self
+                    .arena
+                    .alloc(self.transform_type(&array_ty.element_type, false));
+                Expr::Array(self.arena.alloc(Array { the_type: types }))
+            }
             TSType::TSIntersectionType(intersect_type) => {
                 let types = AllocVec::from_iter_in(
                     intersect_type
@@ -279,6 +354,29 @@ impl<'ir> Transform<'ir> {
                 }
             }
             TSType::TSConditionalType(cond_ty) => {
+                match &cond_ty.extends_type {
+                    TSType::TSInferType(infer) => {
+                        let let_expr = Let {
+                            name: &infer.type_parameter.name.name,
+                            check: self
+                                .arena
+                                .alloc(self.transform_type(&cond_ty.check_type, false)),
+                            cond: infer
+                                .type_parameter
+                                .constraint
+                                .as_ref()
+                                .map(|t| &*self.arena.alloc(self.transform_type(&t, false))),
+                            then: self
+                                .arena
+                                .alloc(self.transform_type(&cond_ty.true_type, false)),
+                            r#else: self
+                                .arena
+                                .alloc(self.transform_type(&cond_ty.false_type, true)),
+                        };
+                        return Expr::Let(self.arena.alloc(let_expr));
+                    }
+                    _ => {}
+                }
                 let if_expr = If {
                     check_type: self.transform_type(&cond_ty.check_type, false),
                     extends_type: self.transform_type(&cond_ty.extends_type, false),
@@ -288,6 +386,28 @@ impl<'ir> Transform<'ir> {
                 Expr::If(self.arena.alloc(if_expr))
             }
             TSType::TSTypeReference(ty_ref) => {
+                // Handle builtins: Array<T>, Record<K, V>
+                match &ty_ref.type_name {
+                    TSTypeName::IdentifierName(name) => {
+                        match name.name.as_str() {
+                            "Array" => match &ty_ref.type_parameters {
+                                Some(params) => {
+                                    assert_eq!(params.params.len(), 1);
+                                    return Expr::Array(self.arena.alloc(Array {
+                                        the_type:
+                                            self.arena.alloc(
+                                                self.transform_type(&params.params[0], false),
+                                            ),
+                                    }));
+                                }
+                                None => panic!("Array<...> requires one type parameter"),
+                            },
+                            _ => (),
+                        }
+                    }
+                    TSTypeName::QualifiedName(_) => todo!(),
+                }
+
                 if let Some(params) = &ty_ref.type_parameters {
                     let args = AllocVec::from_iter_in(
                         params
@@ -327,22 +447,18 @@ impl<'ir> Transform<'ir> {
             TSType::TSUndefinedKeyword(_) => todo!(),
             TSType::TSUnknownKeyword(_) => todo!(),
             TSType::TSVoidKeyword(_) => todo!(),
-            TSType::TSArrayType(_) => todo!(),
             TSType::TSConstructorType(_) => todo!(),
             TSType::TSFunctionType(_) => todo!(),
             TSType::TSImportType(_) => todo!(),
-            TSType::TSIndexedAccessType(_) => todo!(),
-            TSType::TSInferType(_) => todo!(),
             TSType::TSMappedType(_) => todo!(),
             TSType::TSQualifiedName(_) => todo!(),
             TSType::TSTemplateLiteralType(_) => todo!(),
-            TSType::TSTupleType(_) => todo!(),
             TSType::TSTypeOperatorType(_) => todo!(),
             TSType::TSTypePredicate(_) => todo!(),
             TSType::TSTypeQuery(_) => todo!(),
-            TSType::TSUnionType(_) => todo!(),
             TSType::JSDocNullableType(_) => todo!(),
             TSType::JSDocUnknownType(_) => todo!(),
+            TSType::TSInferType(_) => todo!(),
         }
     }
 }

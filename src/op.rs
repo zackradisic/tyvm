@@ -23,6 +23,7 @@ pub enum Op {
     CallMain,
     // 2 args, 2 jump instrs
     Extends,
+    ExtendsNoPopLeft,
     PanicExtends,
     Jump,
     Number,
@@ -30,8 +31,14 @@ pub enum Op {
     PopCallFrame,
     // next instr is fields
     MakeObj,
+    MakeArray,
+
+    Index,
+    IndexNumLit,
+
     WriteFile,
     ToTypescriptSource,
+
     SetLocal,
     GetLocal,
     SetGlobal,
@@ -136,7 +143,9 @@ impl Chunk {
                     i += 1;
                     println!("{} CONST: {:?}", i, self.constants[idx as usize]);
                 }
-                Op::Pop => todo!(),
+                Op::Pop => {
+                    println!("{} POP", i);
+                }
                 Op::TailCall | Op::Call => {
                     let count = self.code[i];
                     i += 1;
@@ -170,15 +179,10 @@ impl Chunk {
                         i, globals.chunk.constants[idx as usize]
                     );
                 }
-                Op::PanicExtends | Op::Extends => {
+                Op::ExtendsNoPopLeft | Op::PanicExtends | Op::Extends => {
                     let skip_then = ((self.code[i] as u16) << 8) | (self.code[i + 1] as u16);
                     i += 2;
-                    println!(
-                        "{} {} EXTENDS (skip_then={})",
-                        i,
-                        if op == Op::PanicExtends { "panic" } else { "" },
-                        skip_then
-                    )
+                    println!("{} {:?} (skip_then={})", i, op, skip_then)
                 }
                 Op::Jump => {
                     let offset = ((self.code[i] as u16) << 8) | (self.code[i + 1] as u16);
@@ -192,6 +196,19 @@ impl Chunk {
                     let count = self.code[i];
                     i += 1;
                     println!("{} Make obj {:?}", i, count);
+                }
+                Op::MakeArray => {
+                    let count = self.code[i];
+                    i += 1;
+                    println!("{} MakeArray {:?}", i, count);
+                }
+                Op::Index => {
+                    println!("{} Index", i);
+                }
+                Op::IndexNumLit => {
+                    let count = self.code[i];
+                    i += 1;
+                    println!("{} IndexNumLit {:?}", i, count);
                 }
             }
         }

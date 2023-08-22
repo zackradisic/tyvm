@@ -1,21 +1,184 @@
 #+title: Todo
 
-* TODO [0/6]
-** TODO globals are static so can make this an integer index
-** TODO get rid of heap allocations on =read_args()=
-** TODO don't clone callf rames (see =call()=)
-** TODO compact =Value= representation
-** TODO Make type alias declarations lazyily evaluated
-Problem is something like this:
-#+begin_src typescript
-type IsFunnyNum<V = 69> = V extends 69 ? true : false;
+* TODO fucking important [2/12]
+** DONE globals non-forward declarations all fucked lol
+evaluation of order can't be strictly top down
 
-type result = IsFunnyNum;
+this a little more complicated
+
+need to build DAG of global declarations and the declarations they depend on
+
+What to do with this?
+#+begin_src typescript
+type Fib<X extends number> = FibIter<X, 2, 1, 0>
+type FibIter<X, I, Prev, PrevPrev> = /* ... */
+type Main = WriteFile<
+  "./fib-result.ts",
+  ToTypescriptSource<"FibonacciResult", Fib<amount>>
+>;
+
+type amount = Main;
 #+end_src
 
-I mean even what we have right now
-#+begin_src typescript
-type Main = Print<"HI">
+all globals will be the roots of the stmt nodes
+process them first, add to =globals=
+then when actually compiling the global, need to check if we already compiled so we dont have people redefining vars
+
+** DONE main argv
+** TODO let decls
+this is my strategy:
+
+executing a let decl will add another local to the function.
+since we have the requirement that all exprs when finished executing will leave the stack as it was before, we can be certain that
+pushing this local to the stack will be after the locals of the params + any other locals form let decls:
+#+begin_src bash
+STACK:
+param1 param2 param3 letdecl1 letdecl2 letdecl3
 #+end_src
+
+when you enter the true branch of a let decl, we should push that local
+#+begin_src typescript
+type TestLet<Arg> = Arg extends infer val extends 0 ? val : "nope";
+#+end_src
+(the new bound var doesn't exist in the else branch)
+
+the only problem is then getting rid of these new let decl vars.
+
+** TODO arrays
+to store we just need a vec of types
+
+there are three kinds of arrays:
+1. =Array<T>= or =T[]=
+2. =[T, K, etc]=
+3. =[and: T, labeled: K, etc]=
+
+2 & 3 are actually tuples, but we should treat them the same bc they tuple extends array
+
+also note that the labels in tuples dont matter for typechecking, they are just to make shit readable. so we can store them elsewhere and not give a fuck.
+
+we could make a inline special representation. =Vec= is 24 bytes. =Value= is 8
+usually the array type is just a =Value=
+if its a tuple with 2-3 elements we can inline it probably
+else just pass the =Vec=
+
+we shouldnt even use vec (because of borrowck)
+instead we can use our own repr with ptr + len
+
+also
+** TODO non-object type keys
+all types are actually objects and have additional keys
+
+for example =number= has =toExponential=, =toFixed=, etc.
+
+so each type has like its base number of keys, so we dont have to make every type an =Object=, instead when we type check =string=, =bool=, =number=, etc. against object we just check against these known base keys
+
+the problem is when you add more types to this base amount:
+#+begin_src typescript
+type agumentednumber = number & { foo(): void }
+#+end_src
+
+We have several options:
+1. put a =base= field on the =Object= struct which tells us where to get the base keys ::
+   problem is that =number=, =string= aren't actually objects see the Test<A, B> thing below. you can't make an
+   object with all the fields of a number and have it be a number
+
+   so we want to still have our distinction
+2. or just merge the base keys onto the =fields= of an =Object= ::
+   same problem as above
+3. create an "augmented" type which contains the type and additional fields ::
+   Something like this:
+    #+begin_src rust
+    struct AugmentedType {
+        base: Value,
+        augmentation: Object
+    }
+    #+end_src
+
+4. have special heap allocated variants of keyword types =Number=, =String=, =Boolean=
+
+#+begin_src typescript
+type Test<A, B> = A extends B ? "extends" : "not extends";
+type fakenumber = {
+  toExponential(fractionDigits?: number | undefined): string;
+  toFixed(fractionDigits?: number | undefined): string;
+  toLocaleString(
+    locales?: string | string[] | undefined,
+    options?: Intl.NumberFormatOptions | undefined
+  ): string;
+  toPrecision(precision?: number | undefined): string;
+  toString(radix?: number | undefined): string
+  valueOf(): number
+};
+
+// this returns "not extends"
+type result = Test<fakenumber, number>
+#+end_src
+** TODO optional fields/types
+we have optional types:
+#+begin_src typescript
+type OptionalInObject = {
+  foo?: boolean
+}
+type OptionalInTuple = [foo?: string]
+#+end_src
+
+how do we handle this?
+
+first intuition is to treat them as union like: =T | undefined=.
+indeed, when you hover over =OptionalInObject= or =OptionalInTuple=, the optional fields become: =foo?: boolean | undefined=
+but we need to make sure that the semantics between =foo?: boolean= and this union represenation map over sufficiently enough to do this.
+basically what i want to know is if we can erase the concept of "optionals" completely from the IR and treat them literally as =T | undefined=
+
+the issue is that an optional field actually allows you to omit the field in instantiating the type:
+#+begin_src typescript
+// is okay
+const test: OptionalInObject = {}
+
+type NOOptionalInObject = {
+  foo: boolean | undefined
+}
+// not okay, complains we are missing `foo`
+const notOkay: OptionalInObject = {}
+#+end_src
+
+and I made sure to check this was the same in type-level typescript:
+#+begin_src typescript
+type OptionalInObject = {
+  optional?: boolean;
+};
+type NOOptionalInObject = {
+  optional: boolean | undefined;
+};
+
+type Check<T> = T extends NOOptionalInObject ? "YAY" : "NOO";
+// result is NOO
+type CheckResult = Check<{}>;
+#+end_src
+
+so we need to preserve this optional information
+** TODO index num lit
+can speed up index operations if we make specialization ops for indexing
+
+for example =myarray[0]= is a common expression, specifically indexing with a number constant literal
+** TODO string interning
+this is really important, otherwise string value equality won't work
+** TODO make =extends= a method on =Value= so it can be used in compiler??
+** TODO string interpolation
+** TODO unions
+** TODO GC
+* TODO brainstorming
+** TODO use immutable / persistent data structures
+all values in type-level typescript are immutable. langs with focus on immutability tend to be allocation heavy (you need to make more objects)
+
+fp langs solve this by using persistent data structures which typically have some structural sharing mechanism to reduce allocations for copies
+
+https://github.com/immutable-js/immutable-js/ readme links:
+- hash map tries ([[https://en.wikipedia.org/wiki/Hash_array_mapped_trie][link]])
+- vector tries ([[https://hypirion.com/musings/understanding-persistent-vector-pt-1][link]])
+
+there are some rust crates that implement persistent data structures, but they are designed for safe rust.  they all have some reference counting shit going on. i don't know
+
+** TODO idea for using stack for objects
+what if the key/vals for an object were a slice/window of the stack?
 ** TODO Make ir repr more compact
 some places where we can box stuff

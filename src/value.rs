@@ -6,6 +6,26 @@ use std::{
     ptr,
 };
 
+#[derive(Clone)]
+pub struct Array {
+    /// TODO: optimization
+    /// - Array<T> where T is a simple keyword-like type (number, string, etc.) can be an ArrayT on the KeywordType enum
+    /// - Tuples [A, B, C] can be stored inline
+    /// - everything else in a Vec<Value>
+    pub items: Vec<Value>,
+}
+
+impl Array {
+    pub fn alloc(self) -> *mut Array {
+        let layout = Layout::for_value(&self).align_to(16).unwrap();
+        unsafe {
+            let bytes = alloc(layout) as *mut _;
+            *bytes = self;
+            bytes
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct ObjectField(pub *mut StringRef, pub Value);
 impl ObjectField {
@@ -34,21 +54,6 @@ impl Object {
             *bytes = self;
             bytes
         }
-    }
-}
-
-impl std::fmt::Debug for Object {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut f = f.debug_struct("Object");
-        for ObjectField(key, val) in self.fields.iter() {
-            let str_key = unsafe { key.as_ref().unwrap().to_string() };
-            // unsafe {
-            //     let k = key.as_ref().unwrap();
-            //     let str_key = k.as_slice();
-            f.field(&str_key, &val);
-            // }
-        }
-        f.finish()
     }
 }
 
@@ -83,16 +88,6 @@ impl HeapString {
     }
 }
 
-impl std::fmt::Debug for HeapString {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // f.debug_tuple("HeapString").field(&self.as_slice()).finish()
-        f.debug_tuple("HeapString")
-            .field(&self.as_slice())
-            // .field(&self.to_string())
-            .finish()
-    }
-}
-
 #[derive(Copy, Clone)]
 pub struct InlinedString {
     pub tag_and_len: u8,
@@ -115,15 +110,6 @@ impl InlinedString {
 
     pub fn to_string(self) -> String {
         self.as_slice().to_string()
-    }
-}
-
-impl std::fmt::Debug for InlinedString {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("InlinedString")
-            .field(&self.as_slice())
-            // .field(&self.to_string())
-            .finish()
     }
 }
 
@@ -212,18 +198,6 @@ impl StringRef {
     }
 }
 
-impl std::fmt::Debug for StringRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.is_inlined() {
-            f.debug_tuple("StringRef")
-                .field(&self.as_inlined())
-                .finish()
-        } else {
-            f.debug_tuple("StringRef").field(&self.as_heap()).finish()
-        }
-    }
-}
-
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct ObjRef(*mut c_void);
@@ -232,8 +206,31 @@ impl ObjRef {
     pub const TAG_STR: usize = 1;
     /// 0b0001
     pub const TAG_OBJ: usize = 2;
+    /// 0b0010
+    pub const TAG_ARRAY: usize = 4;
     /// 0b1111
     pub const TAG_MASK: usize = 15;
+
+    pub fn from_array(arr: *mut Array) -> Self {
+        Self(((arr as usize) | Self::TAG_ARRAY) as *mut _)
+    }
+
+    pub fn is_array(self) -> bool {
+        self.as_usize() & Self::TAG_ARRAY == Self::TAG_ARRAY
+    }
+
+    pub fn as_array_ref(&self) -> &Array {
+        #[cfg(feature = "safe_obj")]
+        assert!(self.is_array());
+        unsafe { self.as_array().as_ref().unwrap_unchecked() }
+    }
+
+    pub fn as_array(self) -> *mut Array {
+        #[cfg(feature = "safe_obj")]
+        assert!(self.is_array());
+
+        (self.as_usize() & !Self::TAG_MASK) as *mut Array
+    }
 
     pub fn from_obj(obj: *mut Object) -> Self {
         Self(((obj as usize) | Self::TAG_OBJ) as *mut _)
@@ -302,18 +299,11 @@ impl ObjRef {
     }
 }
 
-impl std::fmt::Debug for ObjRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.is_str_ref() {
-            f.debug_tuple("ObjRef")
-                .field(&self.as_str_ref_owned())
-                .finish()
-        } else {
-            f.debug_tuple("ObjRef").field(&self.as_obj_ref()).finish()
-        }
+impl From<*mut Array> for ObjRef {
+    fn from(value: *mut Array) -> Self {
+        Self::from_array(value)
     }
 }
-
 impl From<*mut Object> for ObjRef {
     fn from(value: *mut Object) -> Self {
         Self::from_obj(value)
@@ -361,8 +351,10 @@ impl KeywordType {
 /// Type-level Typescript has no way to express a NaN in the type-system, so we
 /// use a NaN bit pattern to indicate the value can be an object, boolean, etc.
 ///
-/// We require that pointers are all 16-byte aligned so
-/// there is an additional 4 bottom bits available to use.
+/// We require that pointers are all 16-byte aligned so there is an additional 4
+/// bottom bits available to use. Note that for ObjRef these 4 bottom bits are
+/// used.
+///
 ///
 ///    NN NN NN NN NN NN NN NN NN NN NN XX XX XX XX PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP PP XX XX XX XX       
 /// __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __
@@ -376,21 +368,93 @@ impl PartialEq for Value {
     }
 }
 
-impl std::fmt::Debug for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.is_keyword_type() {
-            return f
-                .debug_tuple("Value")
-                .field(&self.as_keyword_type())
-                .finish();
+mod debug {
+    use super::*;
+
+    impl std::fmt::Debug for Value {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            if self.is_keyword_type() {
+                return f
+                    .debug_tuple("Value")
+                    .field(&self.as_keyword_type())
+                    .finish();
+            }
+            if self.is_num() {
+                return f.debug_tuple("Value").field(&self.as_num()).finish();
+            }
+            if self.is_obj() {
+                return f.debug_tuple("Value").field(&self.as_obj_ref()).finish();
+            }
+            f.debug_tuple("Value").field(&"WTF").finish()
         }
-        if self.is_num() {
-            return f.debug_tuple("Value").field(&self.as_num()).finish();
+    }
+
+    impl fmt::Debug for Array {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("Array").field("items", &self.items).finish()
         }
-        if self.is_obj() {
-            return f.debug_tuple("Value").field(&self.as_obj_ref()).finish();
+    }
+
+    impl std::fmt::Debug for Object {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let mut f = f.debug_struct("Object");
+            for ObjectField(key, val) in self.fields.iter() {
+                let str_key = unsafe { key.as_ref().unwrap().to_string() };
+                // unsafe {
+                //     let k = key.as_ref().unwrap();
+                //     let str_key = k.as_slice();
+                f.field(&str_key, &val);
+                // }
+            }
+            f.finish()
         }
-        f.debug_tuple("Value").field(&"WTF").finish()
+    }
+
+    impl std::fmt::Debug for HeapString {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            // f.debug_tuple("HeapString").field(&self.as_slice()).finish()
+            f.debug_tuple("HeapString")
+                .field(&self.as_slice())
+                // .field(&self.to_string())
+                .finish()
+        }
+    }
+
+    impl std::fmt::Debug for InlinedString {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_tuple("InlinedString")
+                .field(&self.as_slice())
+                // .field(&self.to_string())
+                .finish()
+        }
+    }
+
+    impl std::fmt::Debug for StringRef {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            if self.is_inlined() {
+                f.debug_tuple("StringRef")
+                    .field(&self.as_inlined())
+                    .finish()
+            } else {
+                f.debug_tuple("StringRef").field(&self.as_heap()).finish()
+            }
+        }
+    }
+
+    impl std::fmt::Debug for ObjRef {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            if self.is_str_ref() {
+                f.debug_tuple("ObjRef")
+                    .field(&self.as_str_ref_owned())
+                    .finish()
+            } else if self.is_array() {
+                f.debug_tuple("ObjRef")
+                    .field(&self.as_array_ref().clone())
+                    .finish()
+            } else {
+                f.debug_tuple("ObjRef").field(&self.as_obj_ref()).finish()
+            }
+        }
     }
 }
 
@@ -447,6 +511,14 @@ impl Value {
         ObjRef::from_usize(stripped as usize)
     }
 
+    pub fn as_array_ref(&self) -> &Array {
+        #[cfg(feature = "safe_value")]
+        {
+            assert!(self.is_array)
+        }
+        unsafe { self.as_obj_ref().as_array().as_ref().unwrap() }
+    }
+
     pub fn as_str_ref(self) -> *mut StringRef {
         #[cfg(feature = "safe_value")]
         {
@@ -486,6 +558,10 @@ impl Value {
 
     pub fn is_obj(self) -> bool {
         self.0 & (Self::SIGN_BIT | Self::NAN) == (Self::SIGN_BIT | Self::NAN)
+    }
+
+    pub fn is_array(self) -> bool {
+        self.is_obj() && self.as_obj_ref().is_array()
     }
 
     pub fn is_str(self) -> bool {
@@ -558,10 +634,12 @@ impl<'a> ValueFormatterTs<'a> {
                 KeywordType::Undefined => "undefined",
                 KeywordType::Void => "void",
                 KeywordType::Never => "never",
+
                 KeywordType::String => "string",
                 KeywordType::Number => "number",
                 KeywordType::Bool => "bool",
                 KeywordType::Object => "object",
+
                 KeywordType::True => "true",
                 KeywordType::False => "false",
             });

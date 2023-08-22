@@ -16,7 +16,7 @@ pub use oxc_ast::ast;
 
 use crate::{
     compile::Compiler,
-    value::{StringRef, ValueFormatterTs},
+    value::{Array, StringRef, ValueFormatterTs},
 };
 
 #[derive(Clone)]
@@ -50,14 +50,14 @@ impl VM {
         loop {
             let op: Op = {
                 let call_frame = self.call_frame();
-                /*
+                // /*
                 println!(
                     "STACK: {:?}",
                     self.stack[call_frame.slot_offset..self.stack_len]
                         .iter()
                         .collect::<Vec<_>>()
                 );
-                */
+                // */
                 call_frame.chunk.code[call_frame.instr_offset].into()
             };
 
@@ -69,6 +69,14 @@ impl VM {
             self.call_frame_mut().instr_offset += 1;
 
             match op {
+                Op::Index => {
+                    self.index();
+                }
+                Op::IndexNumLit => {
+                    let object_ty = self.pop();
+                    let num_lit = self.read_constant().as_num();
+                    self.index_num(num_lit, object_ty);
+                }
                 Op::ToTypescriptSource => {
                     let value = self.pop();
                     let type_name_value = self.pop();
@@ -146,7 +154,9 @@ impl VM {
                     let val = self.read_constant();
                     self.push(val);
                 }
-                Op::Pop => todo!(),
+                Op::Pop => {
+                    self.pop();
+                }
                 Op::TailCall => {
                     self.call(true);
                 }
@@ -178,14 +188,28 @@ impl VM {
                 Op::PanicExtends => {
                     let b = self.pop();
                     let a = self.pop();
+                    println!("A: {:?} B: {:?}", a, b);
                     if !self.extends(a, b) {
                         panic!("Extends failed: {:?} does not extend {:?}", a, b)
                     }
+                }
+                Op::ExtendsNoPopLeft => {
+                    let a = self.peek(1);
+                    let b = self.pop();
+                    let jump_if_not_extends = self.read_short();
+                    println!("A: {:?} B: {:?}", a, b);
+                    if !self.extends(a, b) {
+                        println!("BRANCH FAIL");
+                        self.pop();
+                        self.call_frame_mut().instr_offset = jump_if_not_extends as usize
+                    }
+                    println!("BRANCH SUCCESS");
                 }
                 Op::Extends => {
                     let b = self.pop();
                     let a = self.pop();
                     let jump_if_not_extends = self.read_short();
+                    println!("A: {:?} B: {:?}", a, b);
                     if !self.extends(a, b) {
                         self.call_frame_mut().instr_offset = jump_if_not_extends as usize
                     }
@@ -215,12 +239,57 @@ impl VM {
                     self.stack_len -= back as usize;
                     self.push(Value::from_obj_ref(obj.into()));
                 }
+                Op::MakeArray => {
+                    let count = self.read_byte();
+                    self.make_array(count);
+                }
             }
 
             if self.call_frame().instr_offset >= self.call_frame().chunk.code.len() {
                 break;
             }
         }
+    }
+
+    fn index(&mut self) {
+        let index_ty = self.pop();
+        let object_ty = self.pop();
+
+        if index_ty.is_num() {
+            return self.index_num(index_ty.as_num(), object_ty);
+        }
+
+        todo!()
+    }
+
+    fn index_num(&mut self, idx: f64, object_ty: Value) {
+        if object_ty.is_array() {
+            let arr = object_ty.as_array_ref();
+            if idx >= arr.items.len() as f64 {
+                self.push(Value::UNDEFINED);
+            }
+
+            if idx.fract() != 0.0 {
+                self.push(Value::UNDEFINED);
+            }
+
+            self.push(arr.items[idx as usize]);
+            return;
+        }
+        todo!()
+    }
+
+    fn make_array(&mut self, count: u8) {
+        let back = count;
+        let arr = Array {
+            items: self.stack[self.stack_len - back as usize..self.stack_len]
+                .iter()
+                .cloned()
+                .collect(),
+        }
+        .alloc();
+        self.stack_len -= back as usize;
+        self.push(Value::from_obj_ref(arr.into()));
     }
 
     pub fn intersect(&mut self) {
@@ -286,14 +355,51 @@ impl VM {
             return a == b;
         }
         if b.is_str() {
-            return a == b;
+            // TODO: doing bad &str == &str because we dont have string interning yet
+            return a.as_str_ref_owned().as_slice() == b.as_str_ref_owned().as_slice();
         }
+        if b.is_array() {
+            return a.is_array()
+                && self
+                    .extends_array(a.as_obj_ref().as_array_ref(), b.as_obj_ref().as_array_ref());
+        }
+
+        // TODO: this kind of breaks for strings, and arrays which are considered objects because they also have
+        // some base amount of keys.
         if b.is_obj() {
             return a.is_obj()
                 && self.extends_object(a.as_obj_ref().as_obj_ref(), b.as_obj_ref().as_obj_ref());
         }
 
         false
+    }
+
+    fn extends_array(&self, a: &Array, b: &Array) -> bool {
+        // Empty tuple
+        if b.items.is_empty() {
+            return a.items.is_empty();
+        }
+
+        // If `b` is a tuple, then `a` extends `b` if `a` is
+        // a tuple of the same size with each item extending the corresponding item in `b`
+        if b.items.len() > 1 {
+            return a.items.len() == b.items.len()
+                && a.items
+                    .iter()
+                    .cloned()
+                    .zip(b.items.iter().cloned())
+                    .all(|(a, b)| self.extends(a, b));
+        }
+        // Otherwise `b.items.len() == 1`, meaning `b` is a regular Array<T>
+
+        // `a` is an empty tuple which extends any Array<T>
+        if a.items.is_empty() {
+            return true;
+        }
+
+        // `a` is either a tuple or regular Array<T>, in either case
+        // all of its `items` need to extend `b`'s Array type
+        a.items.iter().all(|a| self.extends(*a, b.items[0]))
     }
 
     fn extends_object(&self, a: &Object, b: &Object) -> bool {
@@ -350,20 +456,22 @@ impl VM {
     }
 
     fn call_main(&mut self, name: ObjRef) {
-        // let mut count: u8 = 0;
-        // for arg in std::env::args() {
-        //     let str_ref = StringRef::new(&arg);
-        //     let obj_ref = ObjRef::alloc_new_str_ref(str_ref);
-        //     let value = Value::from_obj_ref(obj_ref);
-        //     self.push(value);
-        //     count += 1;
-        // }
-        let count: u8 = 1;
-        let str_ref = StringRef::new(&"FUCK");
-        let obj_ref = ObjRef::alloc_new_str_ref(str_ref);
-        let value = Value::from_obj_ref(obj_ref);
-        self.push(value);
-        self.call_impl(name, count, false);
+        let mut count: u8 = 0;
+        for arg in std::env::args().skip(1) {
+            let str_ref = StringRef::new(&arg);
+            let obj_ref = ObjRef::alloc_new_str_ref(str_ref);
+            let value = Value::from_obj_ref(obj_ref);
+            self.push(value);
+            count += 1;
+        }
+        self.make_array(count);
+        self.call_impl(name, 1, false);
+        // let count: u8 = 1;
+        // let str_ref = StringRef::new(&"FUCK");
+        // let obj_ref = ObjRef::alloc_new_str_ref(str_ref);
+        // let value = Value::from_obj_ref(obj_ref);
+        // self.push(value);
+        // self.call_impl(name, count, false);
     }
 
     fn call_impl(&mut self, name: ObjRef, count: u8, tail_call: bool) {
@@ -540,9 +648,9 @@ fn run<'alloc>(arena: &'alloc Arena, program: &'alloc ast::Program<'alloc>) -> V
 
 fn main() {
     let allocator = oxc_allocator::Allocator::default();
-    // let source = std::fs::read_to_string("./test/main.ts").unwrap();
+    let source = std::fs::read_to_string("./test/main.ts").unwrap();
     // let source = std::fs::read_to_string("./test/shittyfib.ts").unwrap();
-    let source = std::fs::read_to_string("./test/fib.ts").unwrap();
+    // let source = std::fs::read_to_string("./test/fib.ts").unwrap();
     // let source = std::fs::read_to_string("./test/cycle.ts").unwrap();
     let parser = oxc_parser::Parser::new(
         &allocator,

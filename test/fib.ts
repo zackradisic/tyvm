@@ -22,14 +22,7 @@ type FibIter<
 
 type amount = 1;
 
-// type Main<Argv extends string> = WriteFile<
-//   "./fib-result.ts",
-//   ToTypescriptSource<"FibonacciResult", Fib<amount>>
-// >;
-type Main<Argv extends string> = Print<Fib<amount>>;
-
-// type myobj = {
-//   hi: string;
-//   hello: string;
-//   amount: 40;
-// };
+type Main<Argv extends string> = WriteFile<
+  "./fib-result.ts",
+  ToTypescriptSource<"FibonacciResult", Fib<amount>>
+>;

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::num::NonZeroUsize;
 
 use crate::common::AllocBox as Box;
-use crate::ir::{Expr, LetDecl};
+use crate::ir::{Expr, GlobalDecl};
 use crate::value::{ObjRef, StringRef};
 use crate::{common::*, ir, Value};
 
@@ -19,9 +19,19 @@ pub trait Compile<'alloc> {
     fn compile(&self, compiler: &mut Compiler<'alloc>) {}
 }
 
-impl<'alloc> Compile<'alloc> for ir::Expr<'alloc> {
+impl<'alloc> Compile<'alloc> for &ir::Expr<'alloc> {
     fn compile(&self, compiler: &mut Compiler<'alloc>) {
         compiler.compile_expr(self);
+    }
+}
+
+impl<'alloc> Compile<'alloc> for () {
+    fn compile(&self, compiler: &mut Compiler<'alloc>) {}
+}
+
+impl<'alloc, F: Fn(&mut Compiler<'alloc>) -> ()> Compile<'alloc> for F {
+    fn compile(&self, compiler: &mut Compiler<'alloc>) {
+        self(compiler);
     }
 }
 
@@ -54,6 +64,13 @@ impl<'alloc> Locals<'alloc> {
         let ret = self.count;
         self.count += 1;
         ret
+    }
+
+    pub fn pop(&mut self) {
+        if self.count == 0 {
+            panic!("Popping empty locals")
+        }
+        self.count -= 1;
     }
 }
 
@@ -109,7 +126,7 @@ impl<'alloc> Compiler<'alloc> {
         {
             for stmt in &program.stmts {
                 match stmt {
-                    ir::Statement::LetDecl(LetDecl::Fn(fn_decl)) => {
+                    ir::Statement::LetDecl(GlobalDecl::Fn(fn_decl)) => {
                         let name = fn_decl.ident.name();
                         let str_ref = StringRef::new(name);
                         let name_constant_idx = self.push_constant_no_op(Value::from_obj_ref(
@@ -124,7 +141,7 @@ impl<'alloc> Compiler<'alloc> {
                             },
                         );
                     }
-                    ir::Statement::LetDecl(LetDecl::Var(var_decl)) => {
+                    ir::Statement::LetDecl(GlobalDecl::Var(var_decl)) => {
                         let name = var_decl.ident.name();
                         let str_ref = StringRef::new(name);
                         let name_constant_idx = self.push_constant_no_op(Value::from_obj_ref(
@@ -156,10 +173,10 @@ impl<'alloc> Compiler<'alloc> {
         }
     }
 
-    fn compile_let_decl(&mut self, let_decl: &'alloc ir::LetDecl<'alloc>) {
+    fn compile_let_decl(&mut self, let_decl: &'alloc ir::GlobalDecl<'alloc>) {
         match let_decl {
-            ir::LetDecl::Fn(fn_decl) => self.compile_fn_decl(fn_decl),
-            ir::LetDecl::Var(var_decl) => self.compile_var_decl(var_decl),
+            ir::GlobalDecl::Fn(fn_decl) => self.compile_fn_decl(fn_decl),
+            ir::GlobalDecl::Var(var_decl) => self.compile_var_decl(var_decl),
         }
     }
 
@@ -226,23 +243,27 @@ impl<'alloc> Compiler<'alloc> {
         code[patch_idx + 1] = part2;
     }
 
-    fn compile_cond<C: Compile<'alloc>>(
+    fn compile_cond(
         &mut self,
-        check_ty: &C,
+        check_ty: impl Compile<'alloc>,
         extends_ty: &ir::Expr<'alloc>,
-        then: &ir::Expr<'alloc>,
+        then: impl Compile<'alloc>,
         r#else: &ir::Expr<'alloc>,
+        extends_op: Op,
     ) {
         // self.compile_expr(check_ty);
         check_ty.compile(self);
         self.compile_expr(extends_ty);
 
-        self.push_op(Op::Extends);
+        // self.push_op(Op::Extends);
+        self.push_op(extends_op);
 
         let jump_to_else_branch_if_false_instr_idx = self.cur_fn_mut().chunk.code.len();
         self.push_bytes(0, 0);
 
-        self.compile_expr(then);
+        // self.compile_expr(then);
+        then.compile(self);
+
         self.push_op(Op::Jump);
         let skip_else_branch_idx = self.cur_fn_mut().chunk.code.len();
         self.push_bytes(0, 0);
@@ -272,8 +293,62 @@ impl<'alloc> Compiler<'alloc> {
         self.push_bytes(Op::MakeObj as u8, count as u8);
     }
 
+    fn compile_array(&mut self, types: &[&ir::Expr<'alloc>]) {
+        let count: u8 = types.len().try_into().unwrap();
+        types.iter().for_each(|t| self.compile_expr(t));
+        self.push_bytes(Op::MakeArray as u8, count);
+    }
+
+    fn compile_num_lit(&mut self, num_lit: &NumberLiteral<'alloc>) -> usize {
+        self.push_constant(Value::from_num(num_lit.value))
+    }
+
     fn compile_expr(&mut self, expr: &ir::Expr<'alloc>) {
         match expr {
+            Expr::Let(let_expr) => {
+                match let_expr.cond {
+                    Some(cond_ty) => {
+                        self.compile_cond(
+                            let_expr.check,
+                            cond_ty,
+                            // If the check branch succeeds, the bound variable must
+                            // be added. We do this by using the
+                            // ExtendsNoPopLeft instruction which will keep the
+                            // lhs of the extends (the bound variable value) on
+                            // the stack, and pushing the name to the locals of
+                            // the current function.
+                            |compiler: &mut Compiler<'alloc>| {
+                                compiler.cur_fn_mut().locals.push(let_expr.name);
+                                compiler.compile_expr(let_expr.then);
+                            },
+                            let_expr.r#else,
+                            Op::ExtendsNoPopLeft,
+                        );
+                    }
+                    None => {
+                        // A conditional with no condition always succeeds:
+                        // `type Check<T> = T extends infer P ? "always here" : "never here"
+                        self.compile_expr(let_expr.check);
+                        self.cur_fn_mut().locals.push(let_expr.name);
+                        self.compile_expr(let_expr.then);
+                    }
+                }
+            }
+            Expr::Index(index) => {
+                self.compile_expr(index.object_ty);
+                match index.object_ty.as_num_lit() {
+                    Some(num_lit) => {
+                        let constant_idx = self.compile_num_lit(num_lit);
+                        self.push_bytes(Op::IndexNumLit as u8, constant_idx as u8);
+                    }
+                    None => {
+                        self.compile_expr(index.index_ty);
+                        self.push_op(Op::Index);
+                    }
+                }
+            }
+            Expr::Array(array) => self.compile_array(&[array.the_type]),
+            Expr::Tuple(tup) => self.compile_array(tup.types.as_slice()),
             ir::Expr::Intersect(intersect) => {
                 // If all arguments are object literals we can compile this to one big MakeObj op
                 // if intersect
@@ -334,6 +409,7 @@ impl<'alloc> Compiler<'alloc> {
                 &if_expr.extends_type,
                 &if_expr.then,
                 &if_expr.r#else,
+                Op::Extends,
             ),
             ir::Expr::Identifier(ident) => self.compile_ident(ident),
             ir::Expr::StringLiteral(str_lit) => {
@@ -345,7 +421,7 @@ impl<'alloc> Compiler<'alloc> {
                 self.push_constant(Value::from_bool(bool_lit.value));
             }
             ir::Expr::NumberLiteral(num_lit) => {
-                self.push_constant(Value::from_num(num_lit.value));
+                self.compile_num_lit(num_lit);
             }
             ir::Expr::Call(call) => {
                 match call.name() {
