@@ -235,9 +235,6 @@ impl<'alloc> Compiler<'alloc> {
         let part1 = ((instr_idx & 0b1111111100000000) >> 8) as u8;
         let part2 = (instr_idx & 0b11111111) as u8;
 
-        let wtf: u16 = ((part1 as u16) << 8) | (part2 as u16);
-        println!("WTF: {:?}", wtf);
-
         let code = &mut self.cur_fn_mut().chunk.code;
         code[patch_idx] = part1;
         code[patch_idx + 1] = part2;
@@ -305,6 +302,10 @@ impl<'alloc> Compiler<'alloc> {
 
     fn compile_expr(&mut self, expr: &ir::Expr<'alloc>) {
         match expr {
+            Expr::Union(union) => {
+                union.variants.iter().for_each(|v| self.compile_expr(v));
+                self.push_bytes(Op::Union as u8, union.variants.len() as u8);
+            }
             Expr::Let(let_expr) => {
                 match let_expr.cond {
                     Some(cond_ty) => {
@@ -454,7 +455,7 @@ impl<'alloc> Compiler<'alloc> {
 
                 let count = call.args.len() as u8;
                 match call.name() {
-                    // TODO: Need to actually properly resolve this to
+                    // TODO: Need to actually properly resolve these to
                     // see if it is imported from the stdlib
                     "Print" => {
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
@@ -473,6 +474,20 @@ impl<'alloc> Compiler<'alloc> {
                         }
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
                         self.push_op(Op::ToTypescriptSource);
+                    }
+                    "ParseInt" => {
+                        if count != 1 {
+                            panic!("BAD COUNT")
+                        }
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::ParseInt);
+                    }
+                    "Panic" => {
+                        if count != 1 {
+                            panic!("BAD COUNT")
+                        }
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::Panic);
                     }
                     _ => {
                         println!("NAME: {:?}", call.name());
@@ -511,6 +526,16 @@ impl<'alloc> Compiler<'alloc> {
 
     fn push_bytes(&mut self, a: u8, b: u8) {
         self.cur_fn_mut().chunk.push_bytes(a, b);
+    }
+
+    fn push_global_constant(&mut self, name: &str, val: Value) -> usize {
+        if self.globals.contains_key(name) {
+            let idx = self.main_chunk_mut().chunk.constants.len();
+            self.main_chunk_mut().chunk.constants.push(val);
+            self.globals.insert(name.to_string(), idx);
+            return idx;
+        }
+        *self.globals.get(name).unwrap()
     }
 
     fn push_constant_no_op(&mut self, val: Value) -> usize {

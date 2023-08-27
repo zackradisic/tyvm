@@ -1,14 +1,4 @@
-import { Print, Add, Sub, Lte, Eq } from "./std";
-
-// type FibHelper<
-//   X extends number,
-//   I extends number,
-//   Prev extends number,
-//   PrevPrev extends number
-// > = Eq<X, I> extends true
-//   ? Add<Prev, PrevPrev>
-//   : FibHelper<X, Add<I, 1>, Add<Prev, PrevPrev>, Prev>;
-// type Fib<X extends number> = Lte<X, 1> extends true ? X : FibHelper<X, 2, 1, 0>;
+import { Print, Add, Sub, Lte, Eq, ParseInt, Panic } from "./std";
 
 type Fib<X extends number> = Lte<X, 1> extends true ? X : FibIter<X, 2, 1, 0>;
 type FibIter<
@@ -20,9 +10,11 @@ type FibIter<
   ? Add<Prev, PrevPrev>
   : FibIter<X, Add<I, 1>, Add<Prev, PrevPrev>, Prev>;
 
-type amount = 1;
-
-type Main<Argv extends string> = WriteFile<
-  "./fib-result.ts",
-  ToTypescriptSource<"FibonacciResult", Fib<amount>>
->;
+export type Main<Argv extends string[]> = ParseInt<
+  Argv[0]
+> extends infer amount extends number
+  ? WriteFile<
+      "./test/fib-result.ts",
+      ToTypescriptSource<"FibonacciResult", Fib<amount>>
+    >
+  : Panic<"invalid arguments">;

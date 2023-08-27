@@ -32,12 +32,15 @@ pub enum Op {
     // next instr is fields
     MakeObj,
     MakeArray,
+    MakeUnion,
 
     Index,
     IndexNumLit,
 
     WriteFile,
     ToTypescriptSource,
+    ParseInt,
+    Panic,
 
     SetLocal,
     GetLocal,
@@ -107,6 +110,12 @@ impl Chunk {
                     println!("{} ToTypescriptSource", i)
                 }
                 Op::WriteFile => {
+                    println!("{} WriteFile", i)
+                }
+                Op::Panic => {
+                    println!("{} Panic", i)
+                }
+                Op::ParseInt => {
                     println!("{} WriteFile", i)
                 }
                 Op::Lte => {
@@ -201,6 +210,11 @@ impl Chunk {
                     let count = self.code[i];
                     i += 1;
                     println!("{} MakeArray {:?}", i, count);
+                }
+                Op::MakeUnion => {
+                    let count = self.code[i];
+                    i += 1;
+                    println!("{} MakeUnion {:?}", i, count);
                 }
                 Op::Index => {
                     println!("{} Index", i);

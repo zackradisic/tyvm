@@ -6,16 +6,45 @@ use std::{
     ptr,
 };
 
-#[derive(Clone)]
-pub struct Array {
-    /// TODO: optimization
-    /// - Array<T> where T is a simple keyword-like type (number, string, etc.) can be an ArrayT on the KeywordType enum
-    /// - Tuples [A, B, C] can be stored inline
-    /// - everything else in a Vec<Value>
-    pub items: Vec<Value>,
+/// TODO: optimization
+/// - Array<T> where T is a simple keyword-like type (number, string, etc.) can be an ArrayT on the KeywordType enum
+/// - Tuples [A, B, C] can be stored inline
+/// - everything else in a Vec<Value>
+#[derive(Clone, Debug)]
+pub enum Array {
+    Tuple(Vec<Value>),
+    Single(Value),
 }
 
 impl Array {
+    pub fn as_tuple(&self) -> Option<&Vec<Value>> {
+        match self {
+            Array::Tuple(t) => Some(t),
+            Array::Single(_) => None,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Array::Tuple(v) => v.is_empty(),
+            Array::Single(_) => false,
+        }
+    }
+
+    pub fn items(&self) -> &[Value] {
+        match self {
+            Array::Single(v) => std::slice::from_ref(v),
+            Array::Tuple(v) => v.as_slice(),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            Array::Tuple(v) => v.len(),
+            Array::Single(v) => 1,
+        }
+    }
+
     pub fn alloc(self) -> *mut Array {
         let layout = Layout::for_value(&self).align_to(16).unwrap();
         unsafe {
@@ -202,21 +231,49 @@ impl StringRef {
 #[repr(transparent)]
 pub struct ObjRef(*mut c_void);
 impl ObjRef {
-    /// 0b0000
-    pub const TAG_STR: usize = 1;
     /// 0b0001
-    pub const TAG_OBJ: usize = 2;
+    pub const TAG_STR: usize = 1;
     /// 0b0010
-    pub const TAG_ARRAY: usize = 4;
+    pub const TAG_OBJ: usize = 2;
+    /// 0b0011
+    pub const TAG_ARRAY: usize = 3;
+    /// 0b0100
+    pub const TAG_UNION: usize = 4;
     /// 0b1111
     pub const TAG_MASK: usize = 15;
+
+    #[inline]
+    pub fn tag_bits(self) -> usize {
+        self.as_usize() & Self::TAG_MASK
+    }
+
+    pub fn from_union(union: *mut Array) -> Self {
+        Self(((union as usize) | Self::TAG_UNION) as *mut _)
+    }
+
+    pub fn is_union(self) -> bool {
+        self.tag_bits() == Self::TAG_UNION
+    }
+
+    pub fn as_union_ref(&self) -> &Array {
+        #[cfg(feature = "safe_obj")]
+        assert!(self.is_union());
+        unsafe { self.as_union().as_ref().unwrap_unchecked() }
+    }
+
+    pub fn as_union(self) -> *mut Array {
+        #[cfg(feature = "safe_obj")]
+        assert!(self.is_union());
+
+        (self.as_usize() & !Self::TAG_MASK) as *mut Array
+    }
 
     pub fn from_array(arr: *mut Array) -> Self {
         Self(((arr as usize) | Self::TAG_ARRAY) as *mut _)
     }
 
     pub fn is_array(self) -> bool {
-        self.as_usize() & Self::TAG_ARRAY == Self::TAG_ARRAY
+        self.tag_bits() == Self::TAG_ARRAY
     }
 
     pub fn as_array_ref(&self) -> &Array {
@@ -237,7 +294,7 @@ impl ObjRef {
     }
 
     pub fn is_obj(self) -> bool {
-        self.as_usize() & Self::TAG_OBJ == Self::TAG_OBJ
+        self.tag_bits() == Self::TAG_OBJ
     }
 
     pub fn as_obj_ref(&self) -> &Object {
@@ -268,7 +325,7 @@ impl ObjRef {
     }
 
     pub fn is_str_ref(self) -> bool {
-        self.as_usize() & Self::TAG_STR == Self::TAG_STR
+        self.tag_bits() == Self::TAG_STR
     }
 
     pub fn as_str_ref(self) -> *mut StringRef {
@@ -368,96 +425,7 @@ impl PartialEq for Value {
     }
 }
 
-mod debug {
-    use super::*;
-
-    impl std::fmt::Debug for Value {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            if self.is_keyword_type() {
-                return f
-                    .debug_tuple("Value")
-                    .field(&self.as_keyword_type())
-                    .finish();
-            }
-            if self.is_num() {
-                return f.debug_tuple("Value").field(&self.as_num()).finish();
-            }
-            if self.is_obj() {
-                return f.debug_tuple("Value").field(&self.as_obj_ref()).finish();
-            }
-            f.debug_tuple("Value").field(&"WTF").finish()
-        }
-    }
-
-    impl fmt::Debug for Array {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.debug_struct("Array").field("items", &self.items).finish()
-        }
-    }
-
-    impl std::fmt::Debug for Object {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            let mut f = f.debug_struct("Object");
-            for ObjectField(key, val) in self.fields.iter() {
-                let str_key = unsafe { key.as_ref().unwrap().to_string() };
-                // unsafe {
-                //     let k = key.as_ref().unwrap();
-                //     let str_key = k.as_slice();
-                f.field(&str_key, &val);
-                // }
-            }
-            f.finish()
-        }
-    }
-
-    impl std::fmt::Debug for HeapString {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            // f.debug_tuple("HeapString").field(&self.as_slice()).finish()
-            f.debug_tuple("HeapString")
-                .field(&self.as_slice())
-                // .field(&self.to_string())
-                .finish()
-        }
-    }
-
-    impl std::fmt::Debug for InlinedString {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_tuple("InlinedString")
-                .field(&self.as_slice())
-                // .field(&self.to_string())
-                .finish()
-        }
-    }
-
-    impl std::fmt::Debug for StringRef {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            if self.is_inlined() {
-                f.debug_tuple("StringRef")
-                    .field(&self.as_inlined())
-                    .finish()
-            } else {
-                f.debug_tuple("StringRef").field(&self.as_heap()).finish()
-            }
-        }
-    }
-
-    impl std::fmt::Debug for ObjRef {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            if self.is_str_ref() {
-                f.debug_tuple("ObjRef")
-                    .field(&self.as_str_ref_owned())
-                    .finish()
-            } else if self.is_array() {
-                f.debug_tuple("ObjRef")
-                    .field(&self.as_array_ref().clone())
-                    .finish()
-            } else {
-                f.debug_tuple("ObjRef").field(&self.as_obj_ref()).finish()
-            }
-        }
-    }
-}
-
+/// constants
 impl Value {
     // all exponent bits set to 1
     const NAN: u64 = 0x7ff8000000000000;
@@ -486,7 +454,10 @@ impl Value {
         Value(Self::NAN | Self::TAG_KEYWORD_TYPE | KeywordType::False.as_u64());
 
     const SIGN_BIT: u64 = 0x8000000000000000;
+}
 
+/// conversions
+impl Value {
     pub fn from_obj_ref(obj: ObjRef) -> Value {
         Value(Self::SIGN_BIT | Self::NAN | obj.as_u64())
     }
@@ -514,9 +485,17 @@ impl Value {
     pub fn as_array_ref(&self) -> &Array {
         #[cfg(feature = "safe_value")]
         {
-            assert!(self.is_array)
+            assert!(self.is_array())
         }
         unsafe { self.as_obj_ref().as_array().as_ref().unwrap() }
+    }
+
+    pub fn as_union_ref(&self) -> &Array {
+        #[cfg(feature = "safe_value")]
+        {
+            assert!(self.is_union())
+        }
+        unsafe { self.as_obj_ref().as_union().as_ref().unwrap() }
     }
 
     pub fn as_str_ref(self) -> *mut StringRef {
@@ -564,12 +543,16 @@ impl Value {
         self.is_obj() && self.as_obj_ref().is_array()
     }
 
+    pub fn is_union(self) -> bool {
+        self.is_obj() && self.as_obj_ref().is_union()
+    }
+
     pub fn is_str(self) -> bool {
         self.is_obj() && self.as_obj_ref().is_str_ref()
     }
 
     pub fn is_keyword_type(self) -> bool {
-        self.0 & (Self::NAN | Self::TAG_KEYWORD_TYPE) == (Self::NAN | Self::TAG_KEYWORD_TYPE)
+        self.0 & (Self::NAN | Self::TAG_MASK) == (Self::NAN | Self::TAG_KEYWORD_TYPE)
     }
 
     pub fn is_null(self) -> bool {
@@ -602,6 +585,114 @@ impl Value {
 
     pub fn is_num(self) -> bool {
         self.0 & Self::NAN != Self::NAN
+    }
+}
+
+impl Value {
+    pub fn to_num(self) -> Option<f64> {
+        let str_ref = self.as_str_ref_owned();
+        str_ref.as_slice().parse::<f64>().ok()
+    }
+}
+
+mod debug {
+    use super::*;
+
+    impl std::fmt::Debug for Value {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            if self.is_keyword_type() {
+                return f
+                    .debug_tuple("Value")
+                    .field(&self.as_keyword_type())
+                    .finish();
+            }
+            if self.is_num() {
+                return f.debug_tuple("Value").field(&self.as_num()).finish();
+            }
+            if self.is_obj() {
+                return f.debug_tuple("Value").field(&self.as_obj_ref()).finish();
+            }
+            f.debug_tuple("Value").field(&"WTF").finish()
+        }
+    }
+
+    // impl fmt::Debug for Array {
+    //     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    //         f.debug_struct("Array")
+    //             .field("items", &self.items())
+    //             .finish()
+    //     }
+    // }
+
+    impl std::fmt::Debug for Object {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let mut f = f.debug_struct("Object");
+            for ObjectField(key, val) in self.fields.iter() {
+                let str_key = unsafe { key.as_ref().unwrap().to_string() };
+                // unsafe {
+                //     let k = key.as_ref().unwrap();
+                //     let str_key = k.as_slice();
+                f.field(&str_key, &val);
+                // }
+            }
+            f.finish()
+        }
+    }
+
+    impl std::fmt::Debug for HeapString {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            // f.debug_tuple("HeapString").field(&self.as_slice()).finish()
+            f.debug_tuple("HeapString")
+                .field(&self.as_slice())
+                // .field(&self.to_string())
+                .finish()
+        }
+    }
+
+    impl std::fmt::Debug for InlinedString {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_tuple("InlinedString")
+                .field(&self.as_slice())
+                // .field(&self.to_string())
+                .finish()
+        }
+    }
+
+    impl std::fmt::Debug for StringRef {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            if self.is_inlined() {
+                f.debug_tuple("StringRef")
+                    .field(&self.as_inlined())
+                    .finish()
+            } else {
+                f.debug_tuple("StringRef").field(&self.as_heap()).finish()
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct DebugUnion<'a> {
+        _values: &'a Array,
+    }
+
+    impl std::fmt::Debug for ObjRef {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            if self.is_str_ref() {
+                f.debug_tuple("ObjRef")
+                    .field(&self.as_str_ref_owned())
+                    .finish()
+            } else if self.is_array() {
+                f.debug_tuple("ObjRef").field(&self.as_array_ref()).finish()
+            } else if self.is_union() {
+                f.debug_tuple("ObjRef")
+                    .field(&DebugUnion {
+                        _values: self.as_union_ref(),
+                    })
+                    .finish()
+            } else {
+                f.debug_tuple("ObjRef").field(&self.as_obj_ref()).finish()
+            }
+        }
     }
 }
 

@@ -114,6 +114,24 @@ impl VM {
                     std::fs::write(file_path_str_ref.as_slice(), value_str_ref.as_slice()).unwrap();
                     self.push(Value::NEVER);
                 }
+                Op::ParseInt => {
+                    let maybe_num = self.pop();
+                    if !maybe_num.is_str() {
+                        panic!(
+                            "ParseInt argument should be a string literal, got: {:?}",
+                            maybe_num
+                        )
+                    }
+                    let value = match maybe_num.to_num() {
+                        Some(v) => Value::from_num(v),
+                        None => Value::NEVER,
+                    };
+                    self.push(value);
+                }
+                Op::Panic => {
+                    let msg = self.pop();
+                    panic!("{:?}", msg)
+                }
                 Op::Lte => {
                     let b = self.pop();
                     let a = self.pop();
@@ -243,6 +261,10 @@ impl VM {
                     let count = self.read_byte();
                     self.make_array(count);
                 }
+                Op::MakeUnion => {
+                    let count = self.read_byte();
+                    self.make_union(count);
+                }
             }
 
             if self.call_frame().instr_offset >= self.call_frame().chunk.code.len() {
@@ -265,15 +287,24 @@ impl VM {
     fn index_num(&mut self, idx: f64, object_ty: Value) {
         if object_ty.is_array() {
             let arr = object_ty.as_array_ref();
-            if idx >= arr.items.len() as f64 {
+            let values = match arr {
+                Array::Single(v) => {
+                    self.push(*v);
+                    return;
+                }
+                Array::Tuple(v) => v,
+            };
+            if idx >= arr.len() as f64 {
                 self.push(Value::UNDEFINED);
+                return;
             }
 
             if idx.fract() != 0.0 {
                 self.push(Value::UNDEFINED);
+                return;
             }
 
-            self.push(arr.items[idx as usize]);
+            self.push(values[idx as usize]);
             return;
         }
         todo!()
@@ -281,15 +312,41 @@ impl VM {
 
     fn make_array(&mut self, count: u8) {
         let back = count;
-        let arr = Array {
-            items: self.stack[self.stack_len - back as usize..self.stack_len]
-                .iter()
-                .cloned()
-                .collect(),
-        }
-        .alloc();
+        let arr = match count {
+            0 => Array::Tuple(vec![]).alloc().into(),
+            1 => Array::Single(self.stack[self.stack_len - 1]).alloc().into(),
+            _ => Array::Tuple(
+                self.stack[self.stack_len - back as usize..self.stack_len]
+                    .iter()
+                    .cloned()
+                    .collect(),
+            )
+            .alloc()
+            .into(),
+        };
+
+        let val = Value::from_obj_ref(arr);
         self.stack_len -= back as usize;
-        self.push(Value::from_obj_ref(arr.into()));
+        self.push(val);
+    }
+
+    fn make_union(&mut self, count: u8) {
+        let mut values = Vec::<Value>::new();
+        for val in self.stack[self.stack_len - (count as usize)..self.stack_len]
+            .iter()
+            .cloned()
+        {
+            for existing_val in values.iter().copied() {
+                if self.extends(val, existing_val) {
+                    continue;
+                }
+            }
+            values.push(val);
+        }
+
+        let arr = Array::Tuple(values).alloc();
+        self.stack_len -= count as usize;
+        self.push(Value::from_obj_ref(ObjRef::from_union(arr)));
     }
 
     pub fn intersect(&mut self) {
@@ -376,30 +433,33 @@ impl VM {
 
     fn extends_array(&self, a: &Array, b: &Array) -> bool {
         // Empty tuple
-        if b.items.is_empty() {
-            return a.items.is_empty();
+        if b.is_empty() {
+            return a.is_empty();
         }
 
-        // If `b` is a tuple, then `a` extends `b` if `a` is
-        // a tuple of the same size with each item extending the corresponding item in `b`
-        if b.items.len() > 1 {
-            return a.items.len() == b.items.len()
-                && a.items
-                    .iter()
-                    .cloned()
-                    .zip(b.items.iter().cloned())
-                    .all(|(a, b)| self.extends(a, b));
+        match b {
+            // If `b` is a tuple, then `a` extends `b` if `a` is
+            // a tuple of the same size with each item extending the corresponding item in `b`
+            Array::Tuple(b_items) => a
+                .as_tuple()
+                .map(|a_items| {
+                    a_items.len() == b_items.len()
+                        && a_items
+                            .iter()
+                            .cloned()
+                            .zip(b_items.iter().cloned())
+                            .all(|(a, b)| self.extends(a, b))
+                })
+                .unwrap_or(false),
+            Array::Single(b_ty) => {
+                // Either:
+                // `a` is an empty tuple [] which extends any Array<T>
+                // OR
+                // `a` is either a tuple or regular Array<T>, in either case
+                // all of its `items` need to extend `b`'s Array type
+                a.is_empty() || a.items().iter().all(|a| self.extends(*a, *b_ty))
+            }
         }
-        // Otherwise `b.items.len() == 1`, meaning `b` is a regular Array<T>
-
-        // `a` is an empty tuple which extends any Array<T>
-        if a.items.is_empty() {
-            return true;
-        }
-
-        // `a` is either a tuple or regular Array<T>, in either case
-        // all of its `items` need to extend `b`'s Array type
-        a.items.iter().all(|a| self.extends(*a, b.items[0]))
     }
 
     fn extends_object(&self, a: &Object, b: &Object) -> bool {
@@ -648,9 +708,9 @@ fn run<'alloc>(arena: &'alloc Arena, program: &'alloc ast::Program<'alloc>) -> V
 
 fn main() {
     let allocator = oxc_allocator::Allocator::default();
-    let source = std::fs::read_to_string("./test/main.ts").unwrap();
+    // let source = std::fs::read_to_string("./test/main.ts").unwrap();
     // let source = std::fs::read_to_string("./test/shittyfib.ts").unwrap();
-    // let source = std::fs::read_to_string("./test/fib.ts").unwrap();
+    let source = std::fs::read_to_string("./test/fib.ts").unwrap();
     // let source = std::fs::read_to_string("./test/cycle.ts").unwrap();
     let parser = oxc_parser::Parser::new(
         &allocator,

@@ -39,6 +39,7 @@ pub enum Expr<'ir> {
     Tuple(&'ir Tuple<'ir>),
     Index(&'ir Index<'ir>),
     Let(&'ir Let<'ir>),
+    Union(&'ir Union<'ir>),
 }
 
 impl<'ir> Expr<'ir> {
@@ -65,6 +66,7 @@ impl<'ir> Expr<'ir> {
             Expr::Tuple(tup) => tup.types.iter().all(|t| t.is_lit()),
             Expr::Index(_) => false,
             Expr::Let(_) => false,
+            Expr::Union(_) => false,
         }
     }
 }
@@ -139,7 +141,13 @@ pub struct Let<'ir> {
     pub r#else: &'ir Expr<'ir>,
 }
 
+#[derive(Debug)]
+pub struct Union<'ir> {
+    pub variants: AllocVec<'ir, &'ir Expr<'ir>>,
+}
+
 #[derive(Debug, PartialEq, PartialOrd, Eq, Ord, Clone, Copy)]
+#[repr(transparent)]
 pub struct Ident<'ir>(pub &'ir str);
 
 impl<'ir> Ident<'ir> {
@@ -281,6 +289,9 @@ impl<'ir> Transform<'ir> {
 
     fn transform_type(&self, ty: &'ir ast::TSType<'ir>, tail_call: bool) -> Expr<'ir> {
         match ty {
+            TSType::TSUnionType(union) => {
+                todo!()
+            }
             TSType::TSIndexedAccessType(index) => Expr::Index(
                 self.arena.alloc(Index {
                     object_ty: self
@@ -291,7 +302,6 @@ impl<'ir> Transform<'ir> {
                         .alloc(self.transform_type(&index.index_type, false)),
                 }),
             ),
-            TSType::TSUnionType(_) => todo!(),
             TSType::TSTupleType(tuple) => {
                 let elements: AllocVec<'ir, &'ir Expr<'ir>> = AllocVec::from_iter_in(
                     tuple
