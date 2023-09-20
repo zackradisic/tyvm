@@ -1,1 +1,1 @@
-type FibonacciResult = 1
+type FibonacciResult = 55

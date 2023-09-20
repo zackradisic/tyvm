@@ -1,14 +1,20 @@
 import { Print, Add, Sub, Lte, Eq, ParseInt, Panic } from "./std";
 
-type Fib<X extends number> = Lte<X, 1> extends true ? X : FibIter<X, 2, 1, 0>;
+/**
+ * Compute the Nth fibonacci number
+ **/
+type Fib<N extends number> = Lte<N, 1> extends true ? N : FibIter<N, 2, 1, 0>;
+/**
+ * Comuptes the Nth fibonacci using iterative recursion
+ **/
 type FibIter<
-  X extends number,
+  N extends number,
   I extends number,
-  Prev extends number,
-  PrevPrev extends number
-> = X extends I
-  ? Add<Prev, PrevPrev>
-  : FibIter<X, Add<I, 1>, Add<Prev, PrevPrev>, Prev>;
+  NminusOne extends number,
+  NminusTwo extends number
+> = N extends I
+  ? Add<NminusOne, NminusTwo>
+  : FibIter<N, Add<I, 1>, Add<NminusOne, NminusTwo>, NminusOne>;
 
 export type Main<Argv extends string[]> = ParseInt<
   Argv[0]

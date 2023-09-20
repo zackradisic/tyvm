@@ -391,7 +391,7 @@ impl VM {
         self.push(val);
     }
 
-    /// Extends is a terrible name, think of this as `is a a subset of b`?
+    /// Extends is a terrible name, think of this as: is `a` a subset of `b`?
     pub fn extends(&self, a: Value, b: Value) -> bool {
         if b == Value::NUMBER_KW {
             return a.is_num() || a == Value::NUMBER_KW;
@@ -420,6 +420,17 @@ impl VM {
                 && self
                     .extends_array(a.as_obj_ref().as_array_ref(), b.as_obj_ref().as_array_ref());
         }
+        if b.is_union() {
+            return if a.is_union() {
+                self.extends_union(a.as_union_ref(), b.as_union_ref())
+            } else {
+                b.as_union_ref()
+                    .as_tuple()
+                    .unwrap()
+                    .iter()
+                    .any(|&b| self.extends(a, b))
+            };
+        }
 
         // TODO: this kind of breaks for strings, and arrays which are considered objects because they also have
         // some base amount of keys.
@@ -429,6 +440,19 @@ impl VM {
         }
 
         false
+    }
+
+    /// TODO: handle edge cases:
+    ///   - object edge case
+    ///   - disjoin union edge case
+    fn extends_union(&self, a: &Array, b: &Array) -> bool {
+        let (a, b) = (a.as_tuple().unwrap(), b.as_tuple().unwrap());
+        for a in a.iter() {
+            if !b.iter().any(|b| self.extends(*a, *b)) {
+                return false;
+            }
+        }
+        true
     }
 
     fn extends_array(&self, a: &Array, b: &Array) -> bool {
