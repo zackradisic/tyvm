@@ -1,18 +1,18 @@
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::mem::size_of;
 use std::num::NonZeroUsize;
 
 use crate::common::AllocBox as Box;
 use crate::ir::{Expr, GlobalDecl};
-use crate::value::{ObjRef, StringRef};
-use crate::{common::*, ir, Value};
+use crate::op::Op;
+use crate::{common::*, ir};
 
 use oxc_ast::ast;
 use oxc_ast::ast::*;
 
-use crate::op::{Chunk, Op};
-
 pub const GLOBAL_STR: &'static str = "__tyvm_global";
+pub const GLOBAL_STR_TABLE_IDX: ConstantTableIdx = ConstantTableIdx(0);
 const UNINIT_STR: &'static str = "uninitialized memory string if you see this its bad";
 
 pub trait Compile<'alloc> {
@@ -35,18 +35,73 @@ impl<'alloc, F: Fn(&mut Compiler<'alloc>) -> ()> Compile<'alloc> for F {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct LocalIdx(u8);
+#[derive(Default, Debug)]
+pub struct Compiler<'alloc> {
+    /// Indexed by ConstantTableIdx, values themselves represent byte-wise indices into the
+    /// constants buffer
+    constant_table: Vec<ConstantEntry>,
+    /// The constant pool section of the bytecode.
+    /// INVARIANTS:
+    /// 1. All values in the pool are 8 byte aligned.
+    /// 2. All number values in the pool are in little endian order
+    constants: Vec<u8>,
 
-impl<'alloc> Compile<'alloc> for LocalIdx {
-    fn compile(&self, compiler: &mut Compiler<'alloc>) {
-        compiler.push_bytes(Op::GetLocal as u8, self.0);
+    globals: BTreeSet<ConstantTableIdx>,
+    pub functions: BTreeMap<ConstantTableIdx, Function<'alloc>>,
+
+    current_function_name: ConstantTableIdx,
+    interned_strings: BTreeMap<&'alloc str, ConstantTableIdx>,
+}
+
+#[derive(Debug)]
+pub struct Function<'alloc> {
+    locals: Locals<'alloc>,
+    code: Code,
+    name: Option<ConstantTableIdx>,
+}
+
+#[repr(C, align(8))]
+#[derive(
+    Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, bytemuck::Pod, bytemuck::Zeroable,
+)]
+pub struct ConstantEntry {
+    idx: ConstantIdx,
+    kind: ConstantKind,
+}
+
+#[repr(u32)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ConstantKind {
+    #[default]
+    Boolean,
+    Number,
+    String,
+}
+
+unsafe impl bytemuck::Pod for ConstantKind {}
+unsafe impl bytemuck::Zeroable for ConstantKind {
+    fn zeroed() -> Self {
+        unsafe { core::mem::zeroed() }
     }
 }
+
+#[repr(transparent)]
+#[derive(
+    Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, bytemuck::Pod, bytemuck::Zeroable,
+)]
+pub struct ConstantIdx(u32);
+#[repr(transparent)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ConstantTableIdx(u32);
 
 #[derive(Clone, Copy, Debug)]
 pub struct Local<'alloc> {
     name: &'alloc str,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Code {
+    buf: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -55,99 +110,185 @@ pub struct Locals<'alloc> {
     count: u8,
 }
 
-impl<'alloc> Locals<'alloc> {
-    pub fn push(&mut self, name: &'alloc str) -> u8 {
-        if self.count == u8::MAX {
-            panic!("TOO MANY LOCALS BRO WTF")
-        }
-        self.stack[self.count as usize] = Local { name };
-        let ret = self.count;
-        self.count += 1;
-        ret
-    }
+// #[derive(Clone, Debug, Default)]
+// pub enum ConstantKind {}
 
-    pub fn pop(&mut self) {
-        if self.count == 0 {
-            panic!("Popping empty locals")
-        }
-        self.count -= 1;
-    }
-}
-
-impl<'alloc> Default for Locals<'alloc> {
-    fn default() -> Self {
-        Self {
-            stack: [Local { name: UNINIT_STR }; u8::MAX as usize],
-            count: Default::default(),
-        }
-    }
-}
-
-impl<'alloc> Locals<'alloc> {
-    fn iter<'a>(&'a self) -> LocalsIter<'a, 'alloc> {
-        LocalsIter { locals: self, i: 0 }
-    }
-}
-
-#[derive(Debug)]
-pub struct Function<'alloc> {
-    locals: Locals<'alloc>,
-    pub chunk: Chunk,
-    global_constant_idx: Option<usize>,
-}
-
-pub struct Compiler<'alloc> {
-    /// TODO Key can be Value or string ptr
-    globals: HashMap<String, usize>,
-    functions: BTreeMap<String, Function<'alloc>>,
-    current_function_name: String,
-}
-
+// Utility
 impl<'alloc> Compiler<'alloc> {
     pub fn new() -> Self {
-        Self {
-            globals: Default::default(),
-            functions: BTreeMap::from_iter([(
-                GLOBAL_STR.to_owned(),
-                Function {
-                    locals: Locals {
-                        stack: [Local { name: UNINIT_STR }; u8::MAX as usize],
-                        count: 0,
-                    },
-                    chunk: Chunk::default(),
-                    global_constant_idx: None,
-                },
-            )]),
-            current_function_name: GLOBAL_STR.to_owned(),
-        }
+        let mut this = Self {
+            ..Default::default()
+        };
+        this.init();
+        this
     }
+
+    fn init(&mut self) {
+        let global_str = self.alloc_constant_string(GLOBAL_STR);
+        assert_eq!(global_str, GLOBAL_STR_TABLE_IDX);
+        self.current_function_name = global_str;
+        self.functions.insert(
+            global_str,
+            Function {
+                locals: Locals::default(),
+                code: Code::default(),
+                name: None,
+            },
+        );
+    }
+
+    pub fn serialize(&self, buf: &mut Vec<u8>) {
+        serialize::serialize(self, buf);
+    }
+
+    fn get_name_constant(&self, string: &str) -> Option<ConstantTableIdx> {
+        self.interned_strings.get(string).cloned()
+    }
+
+    /// Allocates the given string in the constant pool. If the string already exists,
+    /// it instead returns an index to the existing allocation.
+    fn alloc_constant_string(&mut self, string: &'alloc str) -> ConstantTableIdx {
+        if let Some(idx) = self.interned_strings.get(string) {
+            return *idx;
+        }
+
+        let u32_size = size_of::<u32>();
+        // `u32_size * 2` because we need the bytes to be aligned to 8
+        // let size = (u32_size * 2) + string.as_bytes().len();
+        let size = u32_size + string.as_bytes().len();
+
+        let (idx, buf) =
+            self.alloc_constant_with_len(ConstantKind::String, size.try_into().unwrap());
+
+        let len = string.len() as u32;
+        buf[0..u32_size].copy_from_slice(&len.to_le_bytes());
+        buf[u32_size..].copy_from_slice(string.as_bytes());
+
+        self.interned_strings.insert(string, idx);
+
+        idx
+    }
+
+    fn alloc_constant_num(&mut self, num: f64) -> ConstantTableIdx {
+        let size = size_of::<f64>();
+
+        let (idx, buf) =
+            self.alloc_constant_with_len(ConstantKind::Number, size.try_into().unwrap());
+
+        buf[0..size].copy_from_slice(&num.to_le_bytes());
+
+        idx
+    }
+
+    fn alloc_constant_bool(&mut self, b: bool) -> ConstantTableIdx {
+        let size = 1;
+        let (idx, buf) = self.alloc_constant_with_len(ConstantKind::Boolean, 1);
+        buf[0] = b as u8;
+        idx
+    }
+
+    /// Reserves data in the constant pool with length of `data_len` and returns
+    /// the index and the reserved buffer of data. This function makes sure the
+    /// index is aligned to 8 bytes.
+    pub fn alloc_constant_with_len(
+        &mut self,
+        kind: ConstantKind,
+        data_len: u32,
+    ) -> (ConstantTableIdx, &mut [u8]) {
+        // Calculate the required padding to achieve 8-byte alignment
+        let padding = (8 - (self.constants.len() % 8)) % 8;
+
+        // Extend the constants with padding bytes
+        self.constants.extend(std::iter::repeat(0).take(padding));
+
+        // Store the starting index of the data in the constants vector
+        let idx = self.new_constant_idx();
+        println!("CONSTANT IDX: {:?}", idx);
+        let table_idx = self.add_constant_table_entry(idx, kind);
+
+        // Extend the constants with data_len
+        self.constants
+            .extend(std::iter::repeat(0).take(data_len as usize));
+
+        let start = idx.0 as usize;
+        let end = self.constants.len();
+
+        // Return the starting index of the allocated data
+        (table_idx, &mut self.constants[start..end])
+    }
+
+    fn add_constant_table_entry(
+        &mut self,
+        idx: ConstantIdx,
+        kind: ConstantKind,
+    ) -> ConstantTableIdx {
+        let table_idx = self.constant_table.len();
+        self.constant_table.push(ConstantEntry { idx, kind });
+        ConstantTableIdx(table_idx.try_into().unwrap())
+    }
+
+    fn new_constant_idx(&self) -> ConstantIdx {
+        let idx = self.constants.len();
+        ConstantIdx(idx.try_into().expect("Constant pool has exceeded ~4gb"))
+    }
+
+    fn push_op(&mut self, op: Op) {
+        self.cur_fn_mut().code.push_op(op)
+    }
+
+    fn push_constant(&mut self, constant: ConstantTableIdx) {
+        self.cur_fn_mut().code.push_constant(constant);
+    }
+
+    fn push_u32(&mut self, val: u32) {
+        self.cur_fn_mut().code.push_u32(val)
+    }
+
+    fn push_op_with_constant(&mut self, op: Op, constant: ConstantTableIdx) {
+        self.cur_fn_mut().code.push_op_with_constant(op, constant)
+    }
+
+    fn push_u8(&mut self, a: u8) {
+        self.cur_fn_mut().code.push_u8(a);
+    }
+
+    fn push_bytes(&mut self, a: u8, b: u8) {
+        self.cur_fn_mut().code.push_bytes(a, b);
+    }
+
+    fn main_chunk_mut(&mut self) -> &mut Function<'alloc> {
+        self.functions.get_mut(&GLOBAL_STR_TABLE_IDX).unwrap()
+    }
+
+    fn cur_fn_mut(&mut self) -> &mut Function<'alloc> {
+        self.functions.get_mut(&self.current_function_name).unwrap()
+    }
+}
+
+// Compilation logic
+impl<'alloc> Compiler<'alloc> {
     pub fn compile(&mut self, program: &'alloc ir::Program<'alloc>) {
         // Collect globals first
         {
             for stmt in &program.stmts {
                 match stmt {
                     ir::Statement::LetDecl(GlobalDecl::Fn(fn_decl)) => {
-                        let name = fn_decl.ident.name();
-                        let str_ref = StringRef::new(name);
-                        let name_constant_idx = self.push_constant_no_op(Value::from_obj_ref(
-                            ObjRef::alloc_new_str_ref(str_ref),
-                        ));
+                        let name_str = fn_decl.ident.name();
+                        let name = self.alloc_constant_string(name_str);
+                        println!("Compiled function: {:?} {:?}", name_str, name);
                         self.functions.insert(
-                            name.to_string(),
+                            name,
                             Function {
                                 locals: Locals::default(),
-                                chunk: Chunk::default(),
-                                global_constant_idx: Some(name_constant_idx),
+                                code: Code::default(),
+                                name: Some(name),
                             },
                         );
                     }
                     ir::Statement::LetDecl(GlobalDecl::Var(var_decl)) => {
                         let name = var_decl.ident.name();
-                        let str_ref = StringRef::new(name);
-                        let name_constant_idx = self.push_constant_no_op(Value::from_obj_ref(
-                            ObjRef::alloc_new_str_ref(str_ref),
-                        ));
-                        self.globals.insert(name.to_string(), name_constant_idx);
+                        let name = self.alloc_constant_string(name);
+                        self.globals.insert(name);
                     }
                     _ => (),
                 }
@@ -158,11 +299,8 @@ impl<'alloc> Compiler<'alloc> {
             self.compile_statement(stmt)
         }
 
-        if let Some(main_fn) = self.functions.get("Main") {
-            self.push_bytes(
-                Op::CallMain as u8,
-                main_fn.global_constant_idx.unwrap() as u8,
-            );
+        if let Some(main_fn_name) = self.get_name_constant("Main") {
+            self.push_op_with_constant(Op::CallMain, main_fn_name);
         }
     }
 
@@ -180,22 +318,21 @@ impl<'alloc> Compiler<'alloc> {
         }
     }
 
-    fn compile_fn_param_check(&mut self, param: &ir::FnParam<'alloc>, local_idx: u8) {
-        if let Some(extends_ty) = &param.extends_type {
-            self.push_bytes(Op::GetLocal as u8, local_idx);
-            self.compile_expr(extends_ty);
-            self.push_op(Op::PanicExtends);
-        }
-        if param.default.is_some() {
-            todo!("Default parameters");
-        }
+    fn compile_var_decl(&mut self, var_decl: &'alloc ir::VarDecl<'alloc>) {
+        self.compile_expr(&var_decl.expr);
+        let name = var_decl.ident.name();
+        let name = self.alloc_constant_string(name);
+        let constant_idx = *self.globals.get(&name).unwrap();
+        self.main_chunk_mut()
+            .code
+            .push_op_with_constant(Op::SetGlobal, constant_idx);
     }
 
     fn compile_fn_decl(&mut self, fn_decl: &'alloc ir::FnDecl<'alloc>) {
         let name = fn_decl.ident.name();
-        let name_string = name.to_string();
-        let prev_name = std::mem::replace(&mut self.current_function_name, name_string.clone());
-        let func = self.functions.get_mut(name).unwrap();
+        let name_constant = self.alloc_constant_string(name);
+        let prev_name = std::mem::replace(&mut self.current_function_name, name_constant);
+        let func = self.functions.get_mut(&name_constant).unwrap();
         for arg in &fn_decl.params {
             func.locals.push(arg.ident.name());
         }
@@ -209,95 +346,16 @@ impl<'alloc> Compiler<'alloc> {
         self.current_function_name = prev_name;
     }
 
-    fn compile_var_decl(&mut self, var_decl: &ir::VarDecl<'alloc>) {
-        self.compile_expr(&var_decl.expr);
-        self.main_chunk_mut().chunk.push_op(Op::SetGlobal);
-        let name = var_decl.ident.name();
-        let constant_idx = *self.globals.get(name).unwrap();
-        self.main_chunk_mut().chunk.push_u8(constant_idx as u8);
-    }
-
-    fn compile_ident(&mut self, ident: &ir::Ident<'alloc>) {
-        let name_str: &str = ident.name();
-        if let Some((op, idx)) = self.find_ident(name_str) {
-            self.push_op(op);
-            self.push_u8(idx);
-            return;
+    fn compile_fn_param_check(&mut self, param: &ir::FnParam<'alloc>, local_idx: u8) {
+        if let Some(extends_ty) = &param.extends_type {
+            self.push_bytes(Op::GetLocal as u8, local_idx);
+            println!("EXTENDS TY: {:#?}", extends_ty);
+            self.compile_expr(extends_ty);
+            self.push_op(Op::PanicExtends);
         }
-        if let Some(constant_idx) = self.globals.get(name_str) {
-            self.push_bytes(Op::GetGlobal as u8, *constant_idx as u8);
-            return;
+        if param.default.is_some() {
+            todo!("Default parameters");
         }
-        panic!("Unknown ident: {:?}", name_str)
-    }
-
-    fn patch_jump(&mut self, instr_idx: u16, patch_idx: usize) {
-        let part1 = ((instr_idx & 0b1111111100000000) >> 8) as u8;
-        let part2 = (instr_idx & 0b11111111) as u8;
-
-        let code = &mut self.cur_fn_mut().chunk.code;
-        code[patch_idx] = part1;
-        code[patch_idx + 1] = part2;
-    }
-
-    fn compile_cond(
-        &mut self,
-        check_ty: impl Compile<'alloc>,
-        extends_ty: &ir::Expr<'alloc>,
-        then: impl Compile<'alloc>,
-        r#else: &ir::Expr<'alloc>,
-        extends_op: Op,
-    ) {
-        // self.compile_expr(check_ty);
-        check_ty.compile(self);
-        self.compile_expr(extends_ty);
-
-        // self.push_op(Op::Extends);
-        self.push_op(extends_op);
-
-        let jump_to_else_branch_if_false_instr_idx = self.cur_fn_mut().chunk.code.len();
-        self.push_bytes(0, 0);
-
-        // self.compile_expr(then);
-        then.compile(self);
-
-        self.push_op(Op::Jump);
-        let skip_else_branch_idx = self.cur_fn_mut().chunk.code.len();
-        self.push_bytes(0, 0);
-
-        let else_starting_idx = self.cur_fn_mut().chunk.code.len();
-        self.patch_jump(
-            else_starting_idx as u16,
-            jump_to_else_branch_if_false_instr_idx,
-        );
-        self.compile_expr(r#else);
-        let end_of_else_idx = self.cur_fn_mut().chunk.code.len();
-        self.patch_jump(end_of_else_idx as u16, skip_else_branch_idx);
-    }
-
-    fn compile_make_obj<'a, I: Iterator<Item = (&'a str, &'alloc Expr<'alloc>)>>(
-        &mut self,
-        len: u8,
-        iter: I,
-    ) {
-        for (k, v) in iter {
-            self.push_constant(Value::from_obj_ref(ObjRef::alloc_new_str_ref(
-                StringRef::new(k),
-            )));
-            self.compile_expr(v);
-        }
-        let count = len;
-        self.push_bytes(Op::MakeObj as u8, count as u8);
-    }
-
-    fn compile_array(&mut self, types: &[&ir::Expr<'alloc>]) {
-        let count: u8 = types.len().try_into().unwrap();
-        types.iter().for_each(|t| self.compile_expr(t));
-        self.push_bytes(Op::MakeArray as u8, count);
-    }
-
-    fn compile_num_lit(&mut self, num_lit: &NumberLiteral<'alloc>) -> usize {
-        self.push_constant(Value::from_num(num_lit.value))
     }
 
     fn compile_expr(&mut self, expr: &ir::Expr<'alloc>) {
@@ -340,7 +398,7 @@ impl<'alloc> Compiler<'alloc> {
                 match index.object_ty.as_num_lit() {
                     Some(num_lit) => {
                         let constant_idx = self.compile_num_lit(num_lit);
-                        self.push_bytes(Op::IndexNumLit as u8, constant_idx as u8);
+                        self.push_op_with_constant(Op::IndexNumLit, constant_idx);
                     }
                     None => {
                         self.compile_expr(index.index_ty);
@@ -384,20 +442,22 @@ impl<'alloc> Compiler<'alloc> {
             }
             // TODO: fast path for object lit
             ir::Expr::ObjectLit(obj_lit) => {
-                self.compile_make_obj(
-                    obj_lit.fields.len() as u8,
-                    obj_lit.fields.iter().map(|(k, &v)| (k.name(), v)),
-                );
+                todo!();
+                // self.compile_make_obj(
+                //     obj_lit.fields.len() as u8,
+                //     obj_lit.fields.iter().map(|(k, &v)| (k.name(), v)),
+                // );
             }
             ir::Expr::Object(obj) => {
-                for (k, v) in obj.fields.iter() {
-                    self.push_constant(Value::from_obj_ref(ObjRef::alloc_new_str_ref(
-                        StringRef::new(k.name()),
-                    )));
-                    self.compile_expr(v);
-                }
-                let count = obj.fields.len();
-                self.push_bytes(Op::MakeObj as u8, count as u8);
+                todo!()
+                // for (k, v) in obj.fields.iter() {
+                //     self.push_constant(Value::from_obj_ref(ObjRef::alloc_new_str_ref(
+                //         StringRef::new(k.name()),
+                //     )));
+                //     self.compile_expr(v);
+                // }
+                // let count = obj.fields.len();
+                // self.push_bytes(Op::MakeObj as u8, count as u8);
             }
             ir::Expr::Number => {
                 self.push_op(Op::Number);
@@ -414,12 +474,12 @@ impl<'alloc> Compiler<'alloc> {
             ),
             ir::Expr::Identifier(ident) => self.compile_ident(ident),
             ir::Expr::StringLiteral(str_lit) => {
-                self.push_constant(Value::from_obj_ref(ObjRef::alloc_new_str_ref(
-                    StringRef::new(&str_lit.value),
-                )));
+                let constant_idx = self.alloc_constant_string(&str_lit.value);
+                self.push_op_with_constant(Op::Constant, constant_idx);
             }
             ir::Expr::BooleanLiteral(bool_lit) => {
-                self.push_constant(Value::from_bool(bool_lit.value));
+                let constant_idx = self.alloc_constant_bool(bool_lit.value);
+                self.push_op_with_constant(Op::Constant, constant_idx);
             }
             ir::Expr::NumberLiteral(num_lit) => {
                 self.compile_num_lit(num_lit);
@@ -491,61 +551,56 @@ impl<'alloc> Compiler<'alloc> {
                     }
                     _ => {
                         println!("NAME: {:?}", call.name());
+                        let name_constant = self.alloc_constant_string(call.name());
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
                         let name_str: &str = &call.name();
-                        if let Some(func_global_constant_idx) = self
-                            .functions
-                            .get(name_str)
-                            .and_then(|func| func.global_constant_idx)
-                        {
-                            self.push_bytes(
-                                if call.tail_call {
-                                    Op::TailCall
-                                } else {
-                                    Op::Call
-                                } as u8,
-                                count,
-                            );
-                            self.push_u8(func_global_constant_idx as u8);
-                        } else {
+                        if !self.functions.contains_key(&name_constant) {
                             panic!("Unknown function name! {:?}", name_str)
                         }
+
+                        self.push_bytes(
+                            if call.tail_call {
+                                Op::TailCall as u8
+                            } else {
+                                Op::Call as u8
+                            },
+                            count,
+                        );
+                        self.push_constant(name_constant);
                     }
                 }
             }
         }
     }
 
-    fn push_op(&mut self, op: Op) {
-        self.cur_fn_mut().chunk.push_op(op)
+    fn compile_num_lit(&mut self, num_lit: &NumberLiteral<'alloc>) -> ConstantTableIdx {
+        let idx = self.alloc_constant_num(num_lit.value);
+        self.push_op_with_constant(Op::Constant, idx);
+        idx
     }
 
-    fn push_u8(&mut self, a: u8) {
-        self.cur_fn_mut().chunk.push_u8(a);
+    fn compile_array(&mut self, types: &[&ir::Expr<'alloc>]) {
+        let count: u32 = types.len().try_into().unwrap();
+        println!("TYPES: {:#?}", types);
+        types.iter().for_each(|t| self.compile_expr(t));
+        self.push_op(Op::MakeArray);
+        self.push_u32(count);
     }
 
-    fn push_bytes(&mut self, a: u8, b: u8) {
-        self.cur_fn_mut().chunk.push_bytes(a, b);
-    }
-
-    fn push_global_constant(&mut self, name: &str, val: Value) -> usize {
-        if self.globals.contains_key(name) {
-            let idx = self.main_chunk_mut().chunk.constants.len();
-            self.main_chunk_mut().chunk.constants.push(val);
-            self.globals.insert(name.to_string(), idx);
-            return idx;
+    fn compile_ident(&mut self, ident: &ir::Ident<'alloc>) {
+        let name_str: &str = ident.name();
+        if let Some((op, idx)) = self.find_ident(name_str) {
+            self.push_op(op);
+            self.push_u8(idx);
+            return;
         }
-        *self.globals.get(name).unwrap()
-    }
-
-    fn push_constant_no_op(&mut self, val: Value) -> usize {
-        self.cur_fn_mut().chunk.push_constant(val)
-    }
-
-    fn push_constant(&mut self, val: Value) -> usize {
-        let constant_idx = self.push_constant_no_op(val);
-        self.push_bytes(Op::Constant as u8, constant_idx as u8);
-        constant_idx
+        if let Some(constant_idx) = self.interned_strings.get(name_str) {
+            if self.globals.contains(constant_idx) {
+                self.push_op_with_constant(Op::GetGlobal, *constant_idx);
+                return;
+            }
+        }
+        panic!("Unknown ident: {:?}", name_str)
     }
 
     fn find_ident(&self, name: &str) -> Option<(Op, u8)> {
@@ -560,7 +615,7 @@ impl<'alloc> Compiler<'alloc> {
         }
 
         self.functions
-            .get(GLOBAL_STR)
+            .get(&GLOBAL_STR_TABLE_IDX)
             .unwrap()
             .locals
             .iter()
@@ -570,17 +625,236 @@ impl<'alloc> Compiler<'alloc> {
             .and_then(|(idx, _)| Some((Op::GetGlobal, idx as u8)))
     }
 
-    pub fn funcs(mut self) -> (Function<'alloc>, BTreeMap<String, Function<'alloc>>) {
-        let global = self.functions.remove(GLOBAL_STR).unwrap();
-        (global, self.functions)
+    fn compile_cond(
+        &mut self,
+        check_ty: impl Compile<'alloc>,
+        extends_ty: &ir::Expr<'alloc>,
+        then: impl Compile<'alloc>,
+        r#else: &ir::Expr<'alloc>,
+        extends_op: Op,
+    ) {
+        // self.compile_expr(check_ty);
+        check_ty.compile(self);
+        self.compile_expr(extends_ty);
+
+        // self.push_op(Op::Extends);
+        self.push_op(extends_op);
+
+        let jump_to_else_branch_if_false_instr_idx = self.cur_fn_mut().code.buf.len();
+        self.push_bytes(0, 0);
+
+        // self.compile_expr(then);
+        then.compile(self);
+
+        self.push_op(Op::Jump);
+        let skip_else_branch_idx = self.cur_fn_mut().code.buf.len();
+        self.push_bytes(0, 0);
+
+        let else_starting_idx = self.cur_fn_mut().code.buf.len();
+        self.patch_jump(
+            else_starting_idx as u16,
+            jump_to_else_branch_if_false_instr_idx,
+        );
+        self.compile_expr(r#else);
+        let end_of_else_idx = self.cur_fn_mut().code.buf.len();
+        self.patch_jump(end_of_else_idx as u16, skip_else_branch_idx);
     }
 
-    fn main_chunk_mut(&mut self) -> &mut Function<'alloc> {
-        self.functions.get_mut(GLOBAL_STR).unwrap()
+    fn patch_jump(&mut self, instr_idx: u16, patch_idx: usize) {
+        let part1 = ((instr_idx & 0b1111111100000000) >> 8) as u8;
+        let part2 = (instr_idx & 0b11111111) as u8;
+
+        let code = &mut self.cur_fn_mut().code.buf;
+        code[patch_idx] = part1;
+        code[patch_idx + 1] = part2;
+    }
+}
+
+impl Code {
+    pub fn push_constant(&mut self, constant: ConstantTableIdx) {
+        self.push_u32(constant.0);
     }
 
-    fn cur_fn_mut(&mut self) -> &mut Function<'alloc> {
-        self.functions.get_mut(&self.current_function_name).unwrap()
+    pub fn push_op_with_constant(&mut self, op: Op, constant: ConstantTableIdx) {
+        self.push_op(op);
+        self.push_constant(constant);
+    }
+
+    pub fn push_op(&mut self, op: Op) {
+        self.push_u8(op as u8)
+    }
+
+    pub fn push_u8(&mut self, val: u8) {
+        self.buf.push(val)
+    }
+
+    pub fn push_u32(&mut self, val: u32) {
+        self.buf.extend(val.to_le_bytes())
+    }
+
+    pub fn push_bytes(&mut self, a: u8, b: u8) {
+        self.push_u8(a);
+        self.push_u8(b);
+    }
+
+    // pub fn debug_code(&self, globals: &Function) {
+    //     let mut i: usize = 0;
+    //     if self.code.is_empty() {
+    //         return;
+    //     }
+
+    //     while i < self.code.len() {
+    //         let op: Op = self.code[i].into();
+    //         i += 1;
+    //         match op {
+    //             Op::CallMain => {
+    //                 let idx = self.code[i];
+    //                 i += 1;
+    //                 println!("{} CallMain {:?}", i, self.constants[idx as usize])
+    //             }
+    //             Op::ToTypescriptSource => {
+    //                 println!("{} ToTypescriptSource", i)
+    //             }
+    //             Op::WriteFile => {
+    //                 println!("{} WriteFile", i)
+    //             }
+    //             Op::Lte => {
+    //                 println!("{} LTE", i);
+    //             }
+    //             Op::Eq => {
+    //                 println!("{} EQ", i);
+    //             }
+    //             Op::Number => {
+    //                 println!("{} Number", i);
+    //             }
+    //             Op::String => {
+    //                 println!("{} String", i);
+    //             }
+    //             Op::Add => {
+    //                 println!("{} ADD", i);
+    //             }
+    //             Op::Sub => {
+    //                 println!("{} SUB", i);
+    //             }
+    //             Op::Intersect => {
+    //                 let count = self.code[i];
+    //                 i += 1;
+    //                 println!("{} INTERSECT: {}", i, count)
+    //             }
+    //             Op::Union => todo!(),
+    //             Op::Print => {
+    //                 let count = self.code[i];
+    //                 i += 1;
+    //                 println!("{} Print: {}", i, count)
+    //             }
+    //             Op::Constant => {
+    //                 let idx = self.code[i];
+    //                 i += 1;
+    //                 println!("{} CONST: {:?}", i, self.constants[idx as usize]);
+    //             }
+    //             Op::Pop => {
+    //                 println!("{} POP", i);
+    //             }
+    //             Op::TailCall | Op::Call => {
+    //                 let count = self.code[i];
+    //                 i += 1;
+    //                 let name_idx = self.code[i];
+    //                 i += 1;
+    //                 println!(
+    //                     "{} {:?} {:?} {:?}",
+    //                     i, op, count, globals.chunk.constants[name_idx as usize]
+    //                 )
+    //             }
+    //             Op::SetLocal => {
+    //                 let idx = self.code[i];
+    //                 i += 1;
+    //                 println!("{} Set local {:?}", i, idx);
+    //             }
+    //             Op::GetLocal => {
+    //                 let idx = self.code[i];
+    //                 i += 1;
+    //                 println!("{} Get local {:?}", i, idx);
+    //             }
+    //             Op::SetGlobal => {
+    //                 let idx = self.code[i];
+    //                 i += 1;
+    //                 println!("{} SET GLOBAL {:?}", i, self.constants[idx as usize]);
+    //             }
+    //             Op::GetGlobal => {
+    //                 let idx = self.code[i];
+    //                 i += 1;
+    //                 println!(
+    //                     "{} GET GLOBAL {:?}",
+    //                     i, globals.chunk.constants[idx as usize]
+    //                 );
+    //             }
+    //             Op::ExtendsNoPopLeft | Op::PanicExtends | Op::Extends => {
+    //                 let skip_then = ((self.code[i] as u16) << 8) | (self.code[i + 1] as u16);
+    //                 i += 2;
+    //                 println!("{} {:?} (skip_then={})", i, op, skip_then)
+    //             }
+    //             Op::Jump => {
+    //                 let offset = ((self.code[i] as u16) << 8) | (self.code[i + 1] as u16);
+    //                 i += 2;
+    //                 println!("{} JUMP {}", i, offset)
+    //             }
+    //             Op::PopCallFrame => {
+    //                 println!("{} POP CALL FRAME", i);
+    //             }
+    //             Op::MakeObj => {
+    //                 let count = self.code[i];
+    //                 i += 1;
+    //                 println!("{} Make obj {:?}", i, count);
+    //             }
+    //             Op::MakeArray => {
+    //                 let count = self.code[i];
+    //                 i += 1;
+    //                 println!("{} MakeArray {:?}", i, count);
+    //             }
+    //             Op::Index => {
+    //                 println!("{} Index", i);
+    //             }
+    //             Op::IndexNumLit => {
+    //                 let count = self.code[i];
+    //                 i += 1;
+    //                 println!("{} IndexNumLit {:?}", i, count);
+    //             }
+    //         }
+    //     }
+    // }
+}
+
+impl<'alloc> Locals<'alloc> {
+    pub fn push(&mut self, name: &'alloc str) -> u8 {
+        if self.count == u8::MAX {
+            panic!("TOO MANY LOCALS BRO WTF")
+        }
+        self.stack[self.count as usize] = Local { name };
+        let ret = self.count;
+        self.count += 1;
+        ret
+    }
+
+    pub fn pop(&mut self) {
+        if self.count == 0 {
+            panic!("Popping empty locals")
+        }
+        self.count -= 1;
+    }
+}
+
+impl<'alloc> Default for Locals<'alloc> {
+    fn default() -> Self {
+        Self {
+            stack: [Local { name: UNINIT_STR }; u8::MAX as usize],
+            count: Default::default(),
+        }
+    }
+}
+
+impl<'alloc> Locals<'alloc> {
+    fn iter<'a>(&'a self) -> LocalsIter<'a, 'alloc> {
+        LocalsIter { locals: self, i: 0 }
     }
 }
 
@@ -616,5 +890,129 @@ impl<'a, 'alloc> DoubleEndedIterator for LocalsIter<'a, 'alloc> {
 impl<'a, 'alloc> ExactSizeIterator for LocalsIter<'a, 'alloc> {
     fn len(&self) -> usize {
         self.locals.count as usize
+    }
+}
+
+pub mod serialize {
+    use bytemuck::Zeroable;
+
+    use super::*;
+
+    const MAGIC_VALUE: u32 = 69420;
+
+    #[repr(C, align(8))]
+    #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
+    struct Header {
+        magic: u32,
+        constants_offset: u32,
+        functions_offset: u32,
+        _pad: u32,
+    }
+
+    #[repr(C, align(8))]
+    #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
+    struct ConstantsHeader {
+        table_len: u32,
+        pool_size: u32,
+        pool_padding: u32,
+        _pad: u32,
+    }
+
+    #[repr(C, align(8))]
+    #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
+    struct FunctionsHeader {
+        table_len: u32,
+        table_offset: u32,
+        function_code_size: u32,
+        function_code_padding: u32,
+    }
+
+    #[repr(C, align(8))]
+    #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
+    struct FunctionTableEntry {
+        name_constant_idx: u32,
+        offset: u32,
+        size: u32,
+        _pad: u32,
+    }
+
+    fn pad_8(length: usize) -> (usize, usize) {
+        let new_length = (length + 7) & !7;
+        (new_length, new_length - length)
+    }
+
+    pub fn serialize<'alloc>(compiler: &Compiler<'alloc>, buf: &mut Vec<u8>) {
+        // Make sure all serializable structs have size that is aligned to 8 bytes
+        assert_eq!(size_of::<Header>() % 8, 0);
+        assert_eq!(size_of::<ConstantsHeader>() % 8, 0);
+        assert_eq!(size_of::<FunctionsHeader>() % 8, 0);
+        assert_eq!(size_of::<FunctionTableEntry>() % 8, 0);
+        assert_eq!(size_of::<ConstantEntry>() % 8, 0);
+
+        let mut header = Header {
+            magic: MAGIC_VALUE,
+            constants_offset: size_of::<Header>() as u32,
+            // patched later
+            functions_offset: 0,
+            _pad: 0,
+        };
+        buf.extend_from_slice(bytemuck::cast_slice(&[header]));
+
+        // let (constants_table_len, constants_table_pad) =
+        //     pad_8(compiler.constant_table.len() * size_of::<ConstantEntry>());
+
+        let (pool_size, pool_padding) = pad_8(compiler.constants.len());
+
+        let constants_header = ConstantsHeader {
+            table_len: (compiler.constant_table.len() * size_of::<ConstantEntry>())
+                .try_into()
+                .unwrap(),
+            pool_size: pool_size.try_into().unwrap(),
+            pool_padding: pool_padding.try_into().unwrap(),
+            _pad: 0,
+        };
+        buf.extend_from_slice(bytemuck::cast_slice(&[constants_header]));
+        // Add constants + padding
+        buf.extend_from_slice(bytemuck::cast_slice(compiler.constant_table.as_slice()));
+
+        buf.extend_from_slice(compiler.constants.as_slice());
+        buf.extend(std::iter::repeat(0).take(pool_padding as usize));
+
+        let functions_offset: u32 = buf.len().try_into().unwrap();
+        header.functions_offset = functions_offset;
+
+        let (functions_code_size, functions_code_padding) =
+            pad_8(size_of::<FunctionTableEntry>() * compiler.functions.len());
+
+        let function_header = FunctionsHeader {
+            table_len: compiler.functions.len().try_into().unwrap(),
+            table_offset: ((functions_offset as usize) + size_of::<FunctionsHeader>())
+                .try_into()
+                .unwrap(),
+            function_code_size: functions_code_size.try_into().unwrap(),
+            function_code_padding: functions_code_padding.try_into().unwrap(),
+        };
+        buf.extend_from_slice(bytemuck::cast_slice(&[function_header]));
+        let mut offset = 0;
+        for (&name, func) in compiler.functions.iter() {
+            let entry = FunctionTableEntry {
+                name_constant_idx: name.0,
+                offset,
+                size: func.code.buf.len().try_into().unwrap(),
+                _pad: 0,
+            };
+            buf.extend_from_slice(bytemuck::cast_slice(&[entry]));
+            let (padded_size, _) = pad_8(entry.size as usize);
+            let padded_size: u32 = padded_size.try_into().unwrap();
+            offset += padded_size;
+        }
+        for (_, func) in compiler.functions.iter() {
+            let (_, pad) = pad_8(func.code.buf.len());
+            buf.extend_from_slice(&func.code.buf);
+            buf.extend(std::iter::repeat(0).take(pad));
+        }
+
+        let header_region = &mut buf.as_mut_slice()[0..size_of::<Header>()];
+        header_region.copy_from_slice(bytemuck::cast_slice(&[header]));
     }
 }

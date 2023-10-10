@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::ops::Deref;
 
 use crate::common::AllocBox as Box;
 use crate::common::*;
@@ -234,15 +235,32 @@ impl<'ir> Transform<'ir> {
 
     fn transform_stmt(&self, stmt: &'ir ast::Statement<'ir>) -> Option<Statement<'ir>> {
         match stmt {
-            ast::Statement::Declaration(Declaration::TSTypeAliasDeclaration(let_decl)) => Some(
-                Statement::LetDecl(self.transform_type_alias_decl(&let_decl)),
-            ),
-            ast::Statement::ModuleDeclaration(_) => {
+            ast::Statement::Declaration(decl) => self.transform_decl(decl),
+            ast::Statement::ModuleDeclaration(module_decl) => match module_decl.deref() {
+                ModuleDeclaration::ExportNamedDeclaration(export_decl) => export_decl
+                    .declaration
+                    .as_ref()
+                    .and_then(|decl| self.transform_decl(decl)),
+                _ => {
+                    // todo!()
+                    println!("FUCKING FIX THIS ZACK!: {:#?}", module_decl);
+                    None
+                }
+            },
+            _ => todo!(),
+        }
+    }
+
+    fn transform_decl(&self, decl: &'ir ast::Declaration<'ir>) -> Option<Statement<'ir>> {
+        match decl {
+            Declaration::TSTypeAliasDeclaration(let_decl) => Some(Statement::LetDecl(
+                self.transform_type_alias_decl(&let_decl),
+            )),
+            _ => {
                 // todo!()
-                println!("FUCKING FIX THIS ZACK!");
+                println!("FUCKING FIX THIS ZACK!: {:#?}", decl);
                 None
             }
-            _ => todo!(),
         }
     }
 

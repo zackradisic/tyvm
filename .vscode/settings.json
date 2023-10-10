@@ -1,0 +1,6 @@
+{
+  "nixEnvSelector.nixFile": "${workspaceRoot}/shell.nix",
+  "files.associations": {
+    "*.bak": "rust"
+  }
+}
