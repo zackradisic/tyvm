@@ -3,6 +3,7 @@ const std = @import("std");
 const print = std.debug.print;
 
 const HashMap = std.AutoHashMap;
+const StringHashMap = std.StringArrayHashMap;
 const Allocator = std.mem.Allocator;
 
 const VM = @This();
@@ -14,6 +15,7 @@ call_frames: [1024]CallFrame = [_]CallFrame{CallFrame.uninit()} ** 1024,
 call_frames_count: usize = 0,
 
 globals: HashMap(ConstantTableIdx, Value),
+interned_strings: std.StringArrayHashMap(ConstantTableIdx),
 
 /// Constant data loaded from the bytecode
 functions: HashMap(ConstantTableIdx, Function),
@@ -23,6 +25,7 @@ constant_pool: []const u8 align(8),
 pub fn init(alloc: Allocator, bytecode: []const u8) !VM {
     var vm: VM = .{
         .globals = HashMap(ConstantTableIdx, Value).init(alloc),
+        .interned_strings = std.StringArrayHashMap(ConstantTableIdx).init(alloc),
         .functions = HashMap(ConstantTableIdx, Function).init(alloc),
         .constant_table = undefined,
         .constant_pool = undefined,
@@ -30,7 +33,6 @@ pub fn init(alloc: Allocator, bytecode: []const u8) !VM {
 
     try vm.load_bytecode(bytecode);
 
-    print("FUNCTIONS: {d}\n", .{vm.functions.unmanaged.size});
     var iter = vm.functions.valueIterator();
     while (iter.next()) |function| {
         function.disassemble(&vm);
@@ -66,6 +68,13 @@ fn load_bytecode(self: *VM, bytecode: []const u8) !void {
     
     self.constant_pool = constant_pool;
     self.constant_table = constant_table;
+
+    for (self.constant_table, 0..) |entry, i| {
+        if (entry.kind == .String) {
+            const str_slice = self.read_constant_string(entry.idx).as_str();
+            try self.interned_strings.put(str_slice, ConstantTableIdx.new(@intCast(i)));
+        }
+    }
 }
 
 pub fn run(self: *VM) !void {

@@ -43,7 +43,7 @@ pub struct Compiler<'alloc> {
     /// The constant pool section of the bytecode.
     /// INVARIANTS:
     /// 1. All values in the pool are 8 byte aligned.
-    /// 2. All number values in the pool are in little endian order
+    /// 2. All values in the pool are encoded in little endian order
     constants: Vec<u8>,
 
     globals: BTreeSet<ConstantTableIdx>,
