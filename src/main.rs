@@ -41,5 +41,5 @@ pub fn main() {
     );
     compiler.serialize(&mut buf);
 
-    std::fs::write("./fib.tyb", buf).unwrap();
+    std::fs::write("./fib.tsb", buf).unwrap();
 }
