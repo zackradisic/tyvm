@@ -1,7 +1,7 @@
 #+title: Todo
 
-* TODO fucking important [1/11]
-** TODO union [1/3]
+* TODO fucking important [1/12]
+** TODO Unions [1/3]
 in terms of representation, we just need =Vec<Value>= for now. later we can do specialization for common like =T | undefined=
 
 *** DONE normalizing unions
@@ -50,7 +50,7 @@ the result is: "yes" | "no"
 
 ** DONE Unable to distinguish arrays and single-item tuples
 I realized I made a very naive error in the way arrays/tuples are represented, which means that single-items and regular arrays are indistinguishable from each other which is bad.
-** TODO non-object type keys
+** TODO Non-object type keys
 all types are actually objects and have additional keys
 
 for example =number= has =toExponential=, =toFixed=, etc.
@@ -98,7 +98,7 @@ type fakenumber = {
 // this returns "not extends"
 type result = Test<fakenumber, number>
 #+end_src
-** TODO optional fields/types
+** TODO Optional fields/types
 we have optional types:
 #+begin_src typescript
 type OptionalInObject = {
@@ -141,6 +141,25 @@ type CheckResult = Check<{}>;
 #+end_src
 
 so we need to preserve this optional information
+** TODO Template literals with non-literal types
+Template literals work with literal types:
+#+begin_src typescript
+// "hehe 420"
+type foo = `hehe ${420}`
+#+end_src
+
+But when a non-literal type is added, the type stays as a template literal type:
+#+begin_src typescript
+// "hehe ${any}"
+type foo = `hehe ${any}`
+#+end_src
+
+You can still concat new strings though:
+
+#+begin_src typescript
+// `hehe ${any}wow 420`
+type lmao = `${foo}wow ${420}`
+#+end_src
 ** TODO index num lit
 can speed up index operations if we make specialization ops for indexing
 
@@ -233,126 +252,3 @@ we shouldnt even use vec (because of borrowck)
 instead we can use our own repr with ptr + len
 
 also
-* preparation 2 show friends
-union exmaple
-* constant pool
-
-In rust we have this:
-#+begin_src rust
-#[derive(Copy, Clone)]
-pub struct Value(u64);
-#+end_src
-
-It can be a keyword type, f64, or object ptr.
-
-The first two can be inlined directly, but object ptr is tricky.
-
-For objects ptr they can point to:
-#+begin_src rust
-/// StringRef can either be InlinedString or HeapString
-#[derive(Copy, Clone)]
-#[repr(transparent)]
-pub struct StringRef(u128);
-
-#[derive(Copy, Clone)]
-pub struct InlinedString {
-    pub tag_and_len: u8,
-    pub chars: [u8; 15],
-}
-
-#[derive(Clone, Copy)]
-pub struct HeapString {
-    pub ptr: *mut u8,
-    pub len: usize,
-}
-
-#[derive(Clone)]
-pub struct Object {
-    /// INVARIANT: must be lexographically ordered so binary search works
-    pub fields: Vec<ObjectField>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct ObjectField(pub *mut StringRef, pub Value);
-
-#[derive(Clone, Debug)]
-pub enum Array {
-    Tuple(Vec<Value>),
-    Single(Value),
-}
-#+end_src
-
- In the bytecode it doesnt make sense to store the pointer. We could probably just store the object data right there.
-
-So what does the object data look like? Do we want it to actually work like a runtime =Value=, or do they need different representations? If the latter, then we probably need to create all the constants on the heap when the VM loads the bytecode. If the former, you have to patch the pointers when the VM loads the bytecode.
-
-I think patching the pointers is the right way to go. At first, all "pointers" will just be offsets. Then when we load bytecode we patch them, should just be a simple increment by base pointer.
-* Refactor everything
-Think I'm just gonna refactor everything.
-
-- Compiler ::
-  Everything needs to be serializable.
-
-  What is currently NOT serializable:
-  - Heap allocated objects (array/object/string) ::
-    First "object" is a bad name. Just call them HeapValue or something?
-  - Functions ::
-    Currently stored in a =BTreeMap<String, Function<'alloc>>=.
-
-    Inside functions, there is a =Chunk= which has a non-serializable =Vec<u8>= and =Vec<Value>= of constants.
-  - Globals ::
-    Currently a =HashMap<String, usize>=. Key being name, usize being index into constant pool of current function
-
-  We need to design how these are laid out in memory.
-
-  First, there should be a "constant pool". Just a chunk of memory where are all the constants live.
-  - Some details about the constant pool ::
-
-    There are heap allocated objects that may be constants. For example a string. The solution is to have a =Constant= type:
-
-    #+begin_src rust
-    enum Constant {
-        Number(f64),
-        Boolean(bool),
-        // directly after are `len` bytes for string
-        String { len: usize },
-        // directly after are `len` other indices to constants
-        Array { len: usize }
-    }
-    #+end_src
-  - ChatGPT ::
-    Given the problem you've described, using a constant pool is a sensible approach. The concept of a constant pool is well-established in the design of virtual machines, like the JVM, because it allows the VM to manage variable-size data efficiently.
-
-    Here's a general approach to creating a constant pool and making your bytecode serializable:
-
-    1. **Constant Pool Design**:
-       - Each entry in the constant pool has a unique index.
-       - Entries can be of variable length.
-       - Precede each entry with a length indicator so that you can determine where the next entry begins.
-       - When serializing the constant pool, prefix the entire pool with a total count of entries or a total length, so that the VM knows how much memory to allocate or how many entries to expect.
-
-    2. **Bytecode Serialization**:
-       - Instructions that use constant pool values don't embed the value directly. Instead, they embed the index of the value in the constant pool.
-       - When serializing bytecode, replace pointers to heap-allocated values (like strings or arrays) with the corresponding index in the constant pool.
-       - On deserialization, the VM will use these indices to reference the actual values in the constant pool.
-
-    3. **Constant Pool Serialization**:
-       - Serialize each entry based on its type:
-         * Numbers (f64): Directly serialize the 64 bits.
-         * Booleans: Can be represented by a single byte.
-         * Strings: Serialize the length followed by the actual characters.
-         * Arrays: Serialize the length followed by the serialized form of each value.
-       - The deserialization process involves reading back each entry, allocating the necessary memory, and restoring the value.
-
-    4. **Memory Management**:
-       - Once the bytecode is loaded into the VM, the VM can create a local representation of the constant pool in memory. This involves allocating memory for strings and arrays and setting up the necessary references.
-       - This will also require a garbage collection strategy or reference counting to manage the lifecycle of these objects, especially if your VM supports dynamic operations on them.
-
-    5. **Consider Alignment and Endianness**:
-       - Depending on the target architectures of your VM, you might need to consider the alignment of your serialized data.
-       - Also, take into account the endianness of your data, especially when transferring between machines with different endianness. You might want to adopt a standard endianness for serialization and then convert as needed during deserialization.
-
-    6. **Versioning**:
-       - It's a good idea to include a version number in the serialized bytecode. This way, if you make changes to the VM or bytecode format in the future, you can still support older bytecode formats.
-
-    With the above approach, the bytecode becomes independent of any specific memory address, making it portable across different machines and VM instances. The process of serialization and deserialization effectively abstracts away the specifics of memory management, allowing you to focus on VM execution.

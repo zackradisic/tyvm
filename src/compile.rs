@@ -371,6 +371,14 @@ impl<'alloc> Compiler<'alloc> {
 
     fn compile_expr(&mut self, expr: &ir::Expr<'alloc>) {
         match expr {
+            Expr::FormattedString(formatted_string) => {
+                let count: u8 = formatted_string.components.len().try_into().unwrap();
+                formatted_string
+                    .components
+                    .iter()
+                    .for_each(|v| self.compile_expr(v));
+                self.push_bytes(Op::FormatString as u8, count)
+            }
             Expr::Union(union) => {
                 union.variants.iter().for_each(|v| self.compile_expr(v));
                 self.push_bytes(Op::Union as u8, union.variants.len() as u8);

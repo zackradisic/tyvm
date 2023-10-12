@@ -45,6 +45,8 @@ pub enum Op {
     SetGlobal,
     GetGlobal,
 
+    FormatString,
+
     Exit,
 }
 

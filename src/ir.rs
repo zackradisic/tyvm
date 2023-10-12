@@ -41,6 +41,7 @@ pub enum Expr<'ir> {
     Index(&'ir Index<'ir>),
     Let(&'ir Let<'ir>),
     Union(&'ir Union<'ir>),
+    FormattedString(&'ir FormattedString<'ir>),
 }
 
 impl<'ir> Expr<'ir> {
@@ -68,6 +69,7 @@ impl<'ir> Expr<'ir> {
             Expr::Index(_) => false,
             Expr::Let(_) => false,
             Expr::Union(_) => false,
+            Expr::FormattedString(_) => false,
         }
     }
 }
@@ -145,6 +147,11 @@ pub struct Let<'ir> {
 #[derive(Debug)]
 pub struct Union<'ir> {
     pub variants: AllocVec<'ir, &'ir Expr<'ir>>,
+}
+
+#[derive(Debug)]
+pub struct FormattedString<'ir> {
+    pub components: AllocVec<'ir, Expr<'ir>>,
 }
 
 #[derive(Debug, PartialEq, PartialOrd, Eq, Ord, Clone, Copy)]
@@ -307,6 +314,43 @@ impl<'ir> Transform<'ir> {
 
     fn transform_type(&self, ty: &'ir ast::TSType<'ir>, tail_call: bool) -> Expr<'ir> {
         match ty {
+            TSType::TSTemplateLiteralType(template) => {
+                let mut components = AllocVec::<Expr<'ir>>::new_in(self.arena);
+
+                let total_count = template.types.len() + template.quasis.len();
+                let mut i = 0;
+                let mut j = 0;
+                for k in 0..total_count {
+                    let ty = if k % 2 == 0 {
+                        let value = template.quasis[i]
+                            .value
+                            .cooked
+                            .as_ref()
+                            .unwrap_or(&template.quasis[i].value.raw);
+
+                        if value.as_str() == "" {
+                            i += 1;
+                            continue;
+                        }
+
+                        let val = Expr::StringLiteral(self.arena.alloc(StringLiteral {
+                            span: template.quasis[i].span,
+                            value: value.clone(),
+                        }));
+
+                        i += 1;
+
+                        val
+                    } else {
+                        let val = self.transform_type(&template.types[j], false);
+                        j += 1;
+                        val
+                    };
+                    components.push(ty);
+                }
+
+                Expr::FormattedString(self.arena.alloc(FormattedString { components }))
+            }
             TSType::TSUnionType(union) => {
                 todo!()
             }
@@ -480,7 +524,6 @@ impl<'ir> Transform<'ir> {
             TSType::TSImportType(_) => todo!(),
             TSType::TSMappedType(_) => todo!(),
             TSType::TSQualifiedName(_) => todo!(),
-            TSType::TSTemplateLiteralType(_) => todo!(),
             TSType::TSTypeOperatorType(_) => todo!(),
             TSType::TSTypePredicate(_) => todo!(),
             TSType::TSTypeQuery(_) => todo!(),

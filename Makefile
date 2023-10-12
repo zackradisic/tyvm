@@ -32,8 +32,8 @@ vm-wasm: zig-out/bin/tyvm.wasm
 clean:
 	rm -rf target zig-out zig-cache
 
+run-wasm: vm-wasm
+	wasmtime ./zig-out/bin/tyvm.wasm --dir=.
 
-.PHONY: build2
-build2:
-	cargo build --target=wasm32-wasi
-	zig build -Dtarget=wasm32-wasi 
+run: vm
+	./zig-out/bin/tyvm 

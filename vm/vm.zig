@@ -195,8 +195,23 @@ pub fn run(self: *VM) !void {
             .Print => {
                 const args_count = frame.read_byte();
                 const val = self.peek(0);
-                print("{?}\n", .{val});
+                if (@as(ValueKind, val) == ValueKind.String) {
+                    print("{s}\n", .{val.String.as_str()});
+                } else {
+                    print("{?}\n", .{val});
+                }
                 self.pop_n(args_count);
+            },
+            .FormatString => {
+                const args_count = frame.read_byte();
+                const start = self.stack_top - args_count;
+                var str_array = std.ArrayListUnmanaged(u8){};
+                for (start[0..args_count]) |v_| {
+                    try v_.encode_as_string(std.heap.c_allocator, &str_array);
+                }
+                str_array.shrinkAndFree(std.heap.c_allocator, str_array.items.len);
+                self.pop_n(args_count);
+                self.push(Value.string(String.from_slice(str_array.items)));
             },
             .Exit => return,
             else => { 
@@ -566,6 +581,11 @@ const Function = struct {
                     i += 1;
                     std.debug.print("{} IndexNumLit {?}\n", .{j, count});
                 },
+                .FormatString => {
+                    const count = self.code[i];
+                    i += 1;
+                    std.debug.print("{} FormatString {?}\n", .{j, count});
+                },
                 .Exit => {
                     std.debug.print("{} Exit\n", .{j});
                 },
@@ -660,6 +680,8 @@ const Op = enum(u8) {
     SetGlobal,
     GetGlobal,
 
+    FormatString,
+
     Exit,
 };
 
@@ -689,6 +711,35 @@ const Value = union(ValueKind){
     fn boolean(value: bool) Value {
         return .{ .Bool = value };
     }
+
+    fn string(value: String) Value {
+        return .{ .String = value };
+    }
+
+    fn encode_as_string(self: Value, alloc: Allocator, buf: *std.ArrayListUnmanaged(u8)) !void {
+        switch (self) {
+            .Any, .NumberKeyword, .BoolKeyword, .StringKeyword => @panic("Unhandled"),
+            .String => |v|{
+                const len = std.fmt.count("{s}", .{v.as_str()});
+                try buf.ensureUnusedCapacity(alloc, len);
+                var insertion_slice = buf.items.ptr[buf.items.len..buf.items.len + len];
+                _ = try std.fmt.bufPrint(insertion_slice, "{s}", .{v.as_str()});
+                buf.items.len += len;
+            },
+            .Bool => |v| {
+                const len = if (v) "true".len else "false".len;
+                try buf.ensureUnusedCapacity(alloc, len);
+                try buf.appendSlice(std.heap.c_allocator, if (v) "true" else "false");
+            },
+            .Number => |v| {
+                const len = std.fmt.count("{d}", .{v});
+                try buf.ensureUnusedCapacity(alloc, len);
+                var insertion_slice = buf.items.ptr[buf.items.len..buf.items.len + len];
+                _ = try std.fmt.bufPrint(insertion_slice, "{d}", .{v});
+                buf.items.len += len;
+            }
+        }
+    }
 };
 
 const String = struct {
@@ -697,5 +748,12 @@ const String = struct {
 
     pub fn as_str(self: String) []const u8 {
         return self.ptr[0..self.len];
+    }
+
+    pub fn from_slice(slice: []const u8) String {
+        return .{
+            .len = @intCast(slice.len),
+            .ptr = @ptrCast(slice.ptr),
+        };
     }
 };
