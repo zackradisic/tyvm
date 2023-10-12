@@ -16,7 +16,7 @@ type FibIter<
   ? Add<NminusOne, NminusTwo>
   : FibIter<N, Add<I, 1>, Add<NminusOne, NminusTwo>, NminusOne>;
 
-export type Main<Argv extends string[]> = Print<Fib<15>>;
+export type Main<Argv extends string[]> = Print<Fib<10>>;
 
 // export type Main<Argv extends string[]> = ParseInt<
 //   Argv[0]

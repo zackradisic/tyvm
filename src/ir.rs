@@ -161,7 +161,7 @@ impl<'ir> Ident<'ir> {
 
     pub fn from_ts_type_name(tname: &'ir TSTypeName<'ir>) -> Self {
         match tname {
-            TSTypeName::IdentifierName(n) => Self(&n.name),
+            TSTypeName::IdentifierReference(refer) => Self(&refer.name),
             TSTypeName::QualifiedName(_) => todo!(),
         }
     }
@@ -214,7 +214,7 @@ pub struct Call<'ir> {
 impl<'ir> Call<'ir> {
     pub fn name(&self) -> &'ir str {
         match self.name {
-            TSTypeName::IdentifierName(name) => name.name.as_str(),
+            TSTypeName::IdentifierReference(refer) => refer.name.as_str(),
             TSTypeName::QualifiedName(_) => todo!(),
         }
     }
@@ -247,7 +247,7 @@ impl<'ir> Transform<'ir> {
                     None
                 }
             },
-            _ => todo!(),
+            ty => todo!("Unimplemented: {:?}", ty),
         }
     }
 
@@ -416,8 +416,8 @@ impl<'ir> Transform<'ir> {
             TSType::TSTypeReference(ty_ref) => {
                 // Handle builtins: Array<T>, Record<K, V>
                 match &ty_ref.type_name {
-                    TSTypeName::IdentifierName(name) => {
-                        match name.name.as_str() {
+                    TSTypeName::IdentifierReference(refer) => {
+                        match refer.name.as_str() {
                             "Array" => match &ty_ref.type_parameters {
                                 Some(params) => {
                                     assert_eq!(params.params.len(), 1);

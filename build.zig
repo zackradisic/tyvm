@@ -22,14 +22,32 @@ pub fn build(b: *std.Build) void {
         .root_source_file = .{ .path = "vm/main.zig" },
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
 
-    const ENABLE_DEBUG_SYMBOLS = true;
-    if (comptime ENABLE_DEBUG_SYMBOLS) {
-        exe.dll_export_fns = true;
-        exe.strip = false;
-        exe.export_table = true;
+    exe.linkSystemLibrary("tyvm_compiler");
+    exe.addIncludePath(.{ .path = "./include" });
+    if (target.cpu_arch != null and target.cpu_arch.?.isWasm()) {
+        if (optimize == .Debug) {
+            exe.addLibraryPath(.{ .path = "./target/wasm32-wasi/debug"});
+        } else {
+            exe.addLibraryPath(.{ .path = "./target/wasm32-wasi/release"});
+        }
+    } else {
+        if (optimize == .Debug) {
+            exe.addLibraryPath(.{ .path = "./target/debug"});
+        } else {
+            exe.addLibraryPath(.{ .path = "./target/release"});
+        }
     }
+
+    // const ENABLE_DEBUG_SYMBOLS = true;
+    // if (comptime ENABLE_DEBUG_SYMBOLS) {
+    //     exe.dll_export_fns = true;
+    //     exe.strip = false;
+    //     exe.export_table = true;
+    //     exe.linkLibC();
+    // }
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default

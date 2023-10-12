@@ -1,7 +1,13 @@
 [package]
-name = "tyvm"
+name = "tyvm_compiler"
 version = "0.1.0"
 edition = "2021"
+
+[lib]
+crate-type = ["staticlib", "lib"]
+
+[[bin]]
+name = "tyvm_compiler"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -11,6 +17,10 @@ oxc_allocator = "0.1.0"
 oxc_ast = "0.1.0"
 oxc_parser = "0.1.0"
 oxc_span = "0.1.0"
+# bumpalo = { version = "3.14.0", features = ["std", "collections"]}
+
+# [patch.crates-io]
+# oxc_allocator = { path = "../oxc/crates/oxc_allocator" }
 
 [profile.release]
 debug = true
