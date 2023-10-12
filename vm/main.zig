@@ -6,5 +6,5 @@ pub fn main() !void {
     const bytecode = try file.readToEndAlloc(std.heap.c_allocator, std.math.maxInt(u32));
 
     var vm = try VM.init(std.heap.c_allocator, bytecode);
-    _ = vm;
+    try vm.run();
 }

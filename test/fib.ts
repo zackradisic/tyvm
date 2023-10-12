@@ -16,11 +16,13 @@ type FibIter<
   ? Add<NminusOne, NminusTwo>
   : FibIter<N, Add<I, 1>, Add<NminusOne, NminusTwo>, NminusOne>;
 
-export type Main<Argv extends string[]> = ParseInt<
-  Argv[0]
-> extends infer amount extends number
-  ? WriteFile<
-      "./test/fib-result.ts",
-      ToTypescriptSource<"FibonacciResult", Fib<amount>>
-    >
-  : Panic<"invalid arguments">;
+export type Main<Argv extends string[]> = Print<Fib<15>>;
+
+// export type Main<Argv extends string[]> = ParseInt<
+//   Argv[0]
+// > extends infer amount extends number
+//   ? WriteFile<
+//       "./test/fib-result.ts",
+//       ToTypescriptSource<"FibonacciResult", Fib<amount>>
+//     >
+//   : Panic<"invalid arguments">;

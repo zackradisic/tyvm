@@ -44,6 +44,8 @@ pub enum Op {
     GetLocal,
     SetGlobal,
     GetGlobal,
+
+    Exit,
 }
 
 const OP_MAX_VAL: u8 = Op::GetGlobal as u8;

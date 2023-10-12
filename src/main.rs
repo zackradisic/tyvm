@@ -8,7 +8,7 @@ use oxc_span::SourceType;
 
 pub fn main() {
     let arena = oxc_allocator::Allocator::default();
-    let source = std::fs::read_to_string("./test/simple.ts").unwrap();
+    let source = std::fs::read_to_string("./test/fib.ts").unwrap();
     let parser = oxc_parser::Parser::new(
         &arena,
         &source,
@@ -31,6 +31,14 @@ pub fn main() {
 
     let mut buf: Vec<u8> = vec![];
     println!("COMPILER: {:#?}", compiler.functions.len());
+    println!(
+        "COMPILER FUNCTIONS: {:#?}",
+        compiler
+            .functions
+            .iter()
+            .map(|(k, _)| k)
+            .collect::<Vec<_>>()
+    );
     compiler.serialize(&mut buf);
 
     std::fs::write("./fib.tyb", buf).unwrap();

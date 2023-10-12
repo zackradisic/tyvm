@@ -12,7 +12,9 @@ use oxc_ast::ast;
 use oxc_ast::ast::*;
 
 pub const GLOBAL_STR: &'static str = "__tyvm_global";
+pub const MAIN_STR: &'static str = "Main";
 pub const GLOBAL_STR_TABLE_IDX: ConstantTableIdx = ConstantTableIdx(0);
+pub const MAIN_STR_TABLE_IDX: ConstantTableIdx = ConstantTableIdx(1);
 const UNINIT_STR: &'static str = "uninitialized memory string if you see this its bad";
 
 pub trait Compile<'alloc> {
@@ -104,6 +106,8 @@ pub struct Code {
     buf: Vec<u8>,
 }
 
+/// Represents the local variables of a function. Local variables in this VM
+/// take place as the first values on a function's "stack window".
 #[derive(Debug)]
 pub struct Locals<'alloc> {
     stack: [Local<'alloc>; u8::MAX as usize],
@@ -125,7 +129,9 @@ impl<'alloc> Compiler<'alloc> {
 
     fn init(&mut self) {
         let global_str = self.alloc_constant_string(GLOBAL_STR);
+        let main_str = self.alloc_constant_string(MAIN_STR);
         assert_eq!(global_str, GLOBAL_STR_TABLE_IDX);
+        assert_eq!(main_str, MAIN_STR_TABLE_IDX);
         self.current_function_name = global_str;
         self.functions.insert(
             global_str,
@@ -342,7 +348,12 @@ impl<'alloc> Compiler<'alloc> {
             .enumerate()
             .for_each(|(idx, param)| self.compile_fn_param_check(param, idx as u8));
         self.compile_expr(&fn_decl.body);
-        self.push_op(Op::PopCallFrame);
+        // If we are exiting `Main` function or the global scope, emit a program
+        // instruction exit instead of popping the call frame
+        self.push_op(match name_constant {
+            GLOBAL_STR_TABLE_IDX | MAIN_STR_TABLE_IDX => Op::Exit,
+            _ => Op::PopCallFrame,
+        });
         self.current_function_name = prev_name;
     }
 
@@ -376,6 +387,15 @@ impl<'alloc> Compiler<'alloc> {
                             // lhs of the extends (the bound variable value) on
                             // the stack, and pushing the name to the locals of
                             // the current function.
+                            //
+                            // This works because an invariant of this stack VM
+                            // is all expressions will end with the stack
+                            // unchanged (expressions will temporarily push
+                            // values onto the stack, but at the end of an
+                            // expression, the stack will be the same as it was
+                            // before the expression was executed). This means,
+                            // we can rely on this newly bound variable's index
+                            // to be stable for the duration of this function.
                             |compiler: &mut Compiler<'alloc>| {
                                 compiler.cur_fn_mut().locals.push(let_expr.name);
                                 compiler.compile_expr(let_expr.then);
@@ -589,12 +609,15 @@ impl<'alloc> Compiler<'alloc> {
 
     fn compile_ident(&mut self, ident: &ir::Ident<'alloc>) {
         let name_str: &str = ident.name();
+        println!("FINDING IDENT: {}", ident.name());
         if let Some((op, idx)) = self.find_ident(name_str) {
+            println!("It's a local: {:?} {:?}", op, idx);
             self.push_op(op);
             self.push_u8(idx);
             return;
         }
         if let Some(constant_idx) = self.interned_strings.get(name_str) {
+            println!("It's a global");
             if self.globals.contains(constant_idx) {
                 self.push_op_with_constant(Op::GetGlobal, *constant_idx);
                 return;
@@ -661,10 +684,11 @@ impl<'alloc> Compiler<'alloc> {
     }
 
     fn patch_jump(&mut self, instr_idx: u16, patch_idx: usize) {
-        let part1 = ((instr_idx & 0b1111111100000000) >> 8) as u8;
-        let part2 = (instr_idx & 0b11111111) as u8;
+        let part1 = (instr_idx & 0b11111111) as u8;
+        let part2 = ((instr_idx & 0b1111111100000000) >> 8) as u8;
 
         let code = &mut self.cur_fn_mut().code.buf;
+        println!("PATCH JUMP: {:?}", patch_idx);
         code[patch_idx] = part1;
         code[patch_idx + 1] = part2;
     }

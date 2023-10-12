@@ -8,6 +8,8 @@ const Allocator = std.mem.Allocator;
 
 const VM = @This();
 
+const TRACING: bool = true;
+
 stack: [1024]Value = [_]Value{.{.Number = 0.0}} ** 1024,
 stack_top: [*]Value = undefined,
 
@@ -79,19 +81,28 @@ fn load_bytecode(self: *VM, bytecode: []const u8) !void {
 
 pub fn run(self: *VM) !void {
     self.stack_top = &self.stack;
-    self.call_frames_top = &self.call_frames;
 
-    const global_fn: *const Function = self.functions.get(ConstantTableIdx.new(0)).?;
+    const global_fn: *const Function = self.functions.getPtr(ConstantTableIdx.new(0)).?;
+
     self.push_call_frame(.{
         .func = global_fn,
         .ip = global_fn.code.ptr,
         .slots = self.stack_top,
     });
 
-    var frame: *CallFrame = self.call_frames[self.call_frames_count - 1];
+    var frame: *CallFrame = &self.call_frames[self.call_frames_count - 1];
     
     while (true) {
         const op: Op = @enumFromInt(frame.read_byte());
+        if (comptime TRACING) {
+            const fn_name = self.read_constant(self.cur_call_frame().func.name).String;
+            print("STACK:\n", .{});
+            const stack_len = @as(usize, @intFromPtr(self.stack_top)) / @sizeOf(Value) - @as(usize, @intFromPtr(self.stack[0..])) / @sizeOf(Value);
+            for (0..stack_len) |i| {
+                print("    {?}\n", .{self.stack[i]});
+            }
+            print("({s}) OP: {s}\n", .{fn_name.as_str(), @tagName(op)});
+        }
         
         switch (op) {
             .Add => {
@@ -114,8 +125,176 @@ pub fn run(self: *VM) !void {
                 const a = self.pop();
                 self.push(Value.boolean(a.Number <= b.Number));
             },
+            .CallMain => {
+                const main_name = frame.read_constant_idx();
+                self.call_main(main_name);
+                frame = self.cur_call_frame();
+            },
+            .Call => {
+                const count = frame.read_byte();
+                const fn_name = frame.read_constant_idx();
+                self.call(count, fn_name, false);
+                frame = self.cur_call_frame();
+            },
+            .TailCall => {
+                const count = frame.read_byte();
+                const fn_name = frame.read_constant_idx();
+                self.call(count, fn_name, true);
+                frame = self.cur_call_frame();
+            },
+            .GetLocal => {
+                const slot = frame.read_byte();
+                const val = frame.read_local(slot);
+                self.push(val);
+            },
+            .Number => {
+                self.push(.NumberKeyword);
+            },
+            .String => {
+                self.push(.StringKeyword);
+            },
+            .MakeArray => {
+                const count = frame.read_u32();
+                self.make_array(count);
+            },
+            .Extends => {
+                const b = self.pop();
+                const a = self.pop();
+                const skip_then_branch_offset = frame.read_u16();
+                if (!self.extends(a, b)) {
+                    frame.ip = @ptrCast(&frame.func.code[skip_then_branch_offset]);
+                }
+            },
+            .PanicExtends => {
+                const b = self.pop();
+                const a = self.pop();
+                if (!self.extends(a, b)) {
+                    @panic("a does not extend b");
+                }
+            },
+            .Constant => {
+                const constant_idx = frame.read_constant_idx();
+                self.push(self.read_constant(constant_idx));
+            },
+            .GetGlobal => {
+                const constant_idx = frame.read_constant_idx();
+                self.push(self.read_constant(constant_idx));
+            },
+            .Jump => {
+                const offset = frame.read_u16();
+                frame.ip = @ptrCast(&frame.func.code[offset]);
+            },
+            .PopCallFrame => {
+                const return_val = self.peek(0);
+                const return_slot = frame.slots;
+                return_slot[0] = return_val;
+                self.stack_top = return_slot + 1;
+                self.call_frames_count -= 1;
+                frame = self.cur_call_frame();
+            },
+            .Print => {
+                const args_count = frame.read_byte();
+                const val = self.peek(0);
+                print("{?}\n", .{val});
+                self.pop_n(args_count);
+            },
+            .Exit => return,
+            else => { 
+                @panic("Unhandled op.");
+            }
         }
     }
+}
+
+fn extends(self: *VM, a: Value, b: Value) bool {
+    _ = self;
+    if (b == .Any) return true;
+    if (b == .NumberKeyword) return @as(ValueKind, a) == ValueKind.Number or @as(ValueKind, a) == ValueKind.NumberKeyword;
+    if (b == .BoolKeyword) return @as(ValueKind, a) == ValueKind.Bool or @as(ValueKind, a) == ValueKind.BoolKeyword;
+    if (b == .StringKeyword) return @as(ValueKind, a) == ValueKind.String or @as(ValueKind, a) == ValueKind.StringKeyword;
+
+    if (@as(ValueKind, b) == .Number) return @as(ValueKind, a) == .Number and a.Number == b.Number;
+    if (@as(ValueKind, b) == .Bool) return @as(ValueKind, a) == .Bool and a.Bool == b.Bool;
+    // `a.String.ptr == b.String.ptr` should be sufficient because all strings
+    // are interned, meaning that string equality is synonymous to pointer
+    // equality. However, if we allow strings to have the same pointer (e.g.
+    // "foobar" and "foo" share the same base pointer), this will obviously
+    // break without a length check.
+    if (@as(ValueKind, b) == .String) return @as(ValueKind, a) == .String and a.String.ptr == b.String.ptr;
+
+    return false;
+}
+
+fn make_array(self: *VM, count: u32) void {
+    _ = count;
+    // For now push dummy value 
+    self.push(.Any);
+}
+
+fn call_main(self: *VM, main_name: ConstantTableIdx) void {
+    const count = 0;
+    // TODO: read args from stdout
+    self.make_array(count);
+    self.call(count, main_name, false);
+}
+
+/// Call a function. This assumes the top of the stack has the N values for the function's arguments.
+fn call(self: *VM, arg_count: u8, fn_name: ConstantTableIdx, tail_call: bool) void {
+    // Reuse the call frame
+    if (tail_call) {
+        const current_call_frame = self.cur_call_frame();
+        // If the function is the same as the current function we just need to:
+        // 1. Reset the instruction pointer
+        // 2. memcpy the arguments into the call frames argument stack slots
+        if (fn_name.v == current_call_frame.func.name.v) {
+            current_call_frame.ip = current_call_frame.func.code.ptr;
+            if (arg_count > 0) {
+                const args_start = self.stack_top - arg_count;
+                const src = args_start[0..arg_count];
+                const dest = current_call_frame.slots[0..arg_count];
+                // `src` and `dest` won't overlap unless arg_count == 0
+                @memcpy(dest, src);
+            }
+            self.stack_top = current_call_frame.slots + arg_count;
+            return;
+        }
+
+        // Otherise, replace current call frame.
+        const new_func: *const Function = self.functions.getPtr(fn_name).?;
+        const old_slots = current_call_frame.slots;
+
+        if (arg_count > 0) {
+            const args_start = self.stack_top - arg_count;
+            const src = args_start[0..arg_count];
+            const dest = current_call_frame.slots[0..arg_count];
+            std.mem.copyForwards(Value, dest, src);
+        }
+
+        self.stack_top = old_slots + arg_count;
+
+        current_call_frame.* = .{
+            .func = new_func,
+            .ip = new_func.code.ptr,
+            .slots = old_slots
+        };
+        return;
+    }
+
+    // 0 1 2 3 (4) 5 6 7 8 (9)
+    const func: *const Function = self.functions.getPtr(fn_name).?;
+    self.push_call_frame(.{
+        .func = func,
+        .ip = func.code.ptr,
+        .slots = self.stack_top - arg_count
+    });
+}
+
+inline fn cur_call_frame(self: *VM) *CallFrame {
+    return &self.call_frames[self.call_frames_count - 1];
+}
+
+inline fn peek(self: *VM, distance: usize) Value {
+    return (self.stack_top - 1 - distance)[0];
 }
 
 inline fn push(self: *VM, value: Value) void {
@@ -124,12 +303,16 @@ inline fn push(self: *VM, value: Value) void {
 }
 
 inline fn pop(self: *VM) Value {
-    self.stack_top -=1;
+    self.stack_top -= 1;
     return self.stack_top[0];
 }
 
+inline fn pop_n(self: *VM, n: usize) void {
+    self.stack_top -= n;
+}
+
 fn push_call_frame(self: *VM, call_frame: CallFrame) void {
-    self.call_frames[self.call_frame_count] = call_frame;
+    self.call_frames[self.call_frames_count] = call_frame;
     self.call_frames_count += 1;
 }
 
@@ -190,14 +373,14 @@ const Bytecode = struct {
 const ConstantTableIdx = extern struct {
     v: u32,
 
-    pub fn new(v: u32) ConstantTableIdx {
+    pub inline fn new(v: u32) ConstantTableIdx {
         return .{ .v = v };
     }
 };
 const ConstantIdx = extern struct {
     v: u32,
 
-    pub fn new(v: u32) ConstantIdx {
+    pub inline fn new(v: u32) ConstantIdx {
         return .{ .v = v };
     }
 };
@@ -214,7 +397,7 @@ const ConstantTableEntry = extern struct {
 };
 
 const CallFrame = struct {
-    ip: [*]u8, 
+    ip: [*]const u8, 
     /// Pointer into VM's value stack at the first slot this function can run
     slots: [*]Value,
     func: *const Function,
@@ -227,19 +410,33 @@ const CallFrame = struct {
         };
     }
 
+    fn read_local(self: *CallFrame, local: u8) Value {
+        return self.slots[local];
+    }
+
     fn read_byte(self: *CallFrame) u8 {
         const byte = self.ip[0];
         self.ip += 1;
         return byte;
     }
 
+    fn read_u16(self: *CallFrame) u16 {
+        const short = @as(u16, @intCast(self.ip[1])) << 8 | @as(u16, @intCast(self.ip[0]));
+        self.ip += 2;
+        return short;
+    }
+
     fn read_u32(self: *CallFrame) u32 {
         var val = @as(u32, @intCast(self.ip[3])) << 24;
-        val |= @as(u32, @intCast(self.code[2])) << 16;
-        val |= @as(u32, @intCast(self.code[1])) << 8;
-        val |= @as(u32, @intCast(self.code[0]));
+        val |= @as(u32, @intCast(self.ip[2])) << 16;
+        val |= @as(u32, @intCast(self.ip[1])) << 8;
+        val |= @as(u32, @intCast(self.ip[0]));
         self.ip += 4;
         return val;
+    }
+
+    fn read_constant_idx(self: *CallFrame) ConstantTableIdx {
+        return ConstantTableIdx.new(self.read_u32());
     }
 };
 
@@ -266,110 +463,111 @@ const Function = struct {
         var i: usize = 0;
         while (i < self.code.len) {
             const op: Op = @enumFromInt(self.code[i]);
+            const j = i;
             i += 1;
             switch (op) {
                 .CallMain => {
                     const idx = self.read_constant_table_idx(&i);
-                    std.debug.print("{} CallMain {s}\n", .{i, vm.read_constant(idx).String.as_str() });
+                    std.debug.print("{} CallMain {s}\n", .{j, vm.read_constant(idx).String.as_str() });
                 },
                 .ToTypescriptSource => {
-                    std.debug.print("{} ToTypescriptSource\n", .{i});
+                    std.debug.print("{} ToTypescriptSource\n", .{j});
                 },
                 .WriteFile => {
-                    std.debug.print("{} WriteFile\n", .{i});
+                    std.debug.print("{} WriteFile\n", .{j});
                 },
                 .Lte => {
-                    std.debug.print("{} LTE\n", .{i});
+                    std.debug.print("{} LTE\n", .{j});
                 },
                 .Eq => {
-                    std.debug.print("{} EQ\n", .{i});
+                    std.debug.print("{} EQ\n", .{j});
                 },
                 .Number => {
-                    std.debug.print("{} Number\n", .{i});
+                    std.debug.print("{} Number\n", .{j});
                 },
                 .String => {
-                    std.debug.print("{} String\n", .{i});
+                    std.debug.print("{} String\n", .{j});
                 },
                 .Add => {
-                    std.debug.print("{} ADD\n", .{i});
+                    std.debug.print("{} ADD\n", .{j});
                 },
                 .Sub => {
-                    std.debug.print("{} SUB\n", .{i});
+                    std.debug.print("{} SUB\n", .{j});
                 },
                 .Intersect => {
                     const count = self.code[i];
                     i += 1;
-                    std.debug.print("{} INTERSECT: {}\n", .{i, count});
+                    std.debug.print("{} INTERSECT: {}\n", .{j, count});
                 },
                 .Union => unreachable,
                 .Print => {
                     const count = self.code[i];
                     i += 1;
-                    std.debug.print("{} Print: {}\n", .{i, count});
+                    std.debug.print("{} Print: {}\n", .{j, count});
                 },
                 .Constant => {
                     const idx = self.read_constant_table_idx(&i);
-                    std.debug.print("{} CONST: {any}\n", .{i, vm.read_constant(idx)});
+                    std.debug.print("{} CONST: {any}\n", .{j, vm.read_constant(idx)});
                 },
                 .Pop => {
-                    std.debug.print("{} POP\n", .{i});
+                    std.debug.print("{} POP\n", .{j});
                 },
                 .TailCall, .Call => {
                     const count = self.code[i];
                     i += 1;
                     const name_idx = self.read_constant_table_idx(&i);
-                    std.debug.print("{} {?} {?} {s}\n", .{i, op, count, vm.read_constant(name_idx).String.as_str()});
+                    std.debug.print("{} {?} {?} {s}\n", .{j, op, count, vm.read_constant(name_idx).String.as_str()});
                 },
                 .SetLocal => {
                     const idx = self.code[i];
                     i += 1;
-                    std.debug.print("{} Set local {?}\n", .{i, idx});
+                    std.debug.print("{} Set local {?}\n", .{j, idx});
                 },
                 .GetLocal => {
                     const idx = self.code[i];
                     i += 1;
-                    std.debug.print("{} Get local {?}\n", .{i, idx});
+                    std.debug.print("{} Get local {?}\n", .{j, idx});
                 },
                 .SetGlobal => {
                     const idx = self.read_constant_table_idx(&i);
-                    std.debug.print("{} SET GLOBAL {s}\n", .{i, vm.read_constant(idx).String.as_str()});
+                    std.debug.print("{} SET GLOBAL {s}\n", .{j, vm.read_constant(idx).String.as_str()});
                 },
                 .GetGlobal => {
                     const idx = self.read_constant_table_idx(&i);
-                    std.debug.print("{} GET GLOBAL {?}\n", .{i, vm.read_constant(idx)});
+                    std.debug.print("{} GET GLOBAL {?}\n", .{j, vm.read_constant(idx)});
                 },
-                .PanicExtends, .Extends => {
-                    std.debug.print("{} {s}\n", .{i, @tagName(op)});
-                },
-                .ExtendsNoPopLeft => {
-                    const skip_then = @as(u16, @intCast(self.code[i])) << 8 | @as(u16, @intCast(self.code[i + 1]));
+                .PanicExtends, .Extends, .ExtendsNoPopLeft => {
+                    const skip_then = @as(u16, @intCast(self.code[i + 1])) << 8 | @as(u16, @intCast(self.code[i]));
                     i += 2;
-                    std.debug.print("{} {?} (skip_then={})\n", .{i, op, skip_then});
+                    std.debug.print("{} {?} (skip_then={})\n", .{j, op, skip_then});
                 },
                 .Jump => {
-                    const offset = @as(u16, @intCast(self.code[i])) << 8 | @as(u16, @intCast(self.code[i + 1]));
+                    const offset = @as(u16, @intCast(self.code[i + 1])) << 8 | @as(u16, @intCast(self.code[i]));
                     i += 2;
-                    std.debug.print("{} JUMP {}\n", .{i, offset});
+                    std.debug.print("{} JUMP {}\n", .{j, offset});
                 },
                 .PopCallFrame => {
-                    std.debug.print("{} POP CALL FRAME\n", .{i});
+                    std.debug.print("{} POP CALL FRAME\n", .{j});
                 },
                 .MakeObj => {
                     const count = self.code[i];
                     i += 1;
-                    std.debug.print("{} Make obj {?}\n", .{i, count});
+                    std.debug.print("{} Make obj {?}\n", .{j, count});
                 },
                 .MakeArray => {
                     const count = self.read_u32(&i);
-                    std.debug.print("{} MakeArray {?}\n", .{i, count});
+                    std.debug.print("{} MakeArray {?}\n", .{j, count});
                 },
                 .Index => {
-                    std.debug.print("{} Index\n", .{i});
+                    std.debug.print("{} Index\n", .{j});
                 },
                 .IndexNumLit => {
                     const count = self.code[i];
                     i += 1;
-                    std.debug.print("{} IndexNumLit {?}\n", .{i, count});
+                    std.debug.print("{} IndexNumLit {?}\n", .{j, count});
+                },
+                .Exit => {
+                    std.debug.print("{} Exit\n", .{j});
                 },
                 else => { 
                     print("UNHANDLED: {s}\n", .{ @tagName(op) });
@@ -461,12 +659,28 @@ const Op = enum(u8) {
     GetLocal,
     SetGlobal,
     GetGlobal,
+
+    Exit,
 };
 
-const Value = union(enum){
+const ValueKind = enum {
+    Any,
+    Number,
+    Bool,
+    String,
+    NumberKeyword,
+    BoolKeyword,
+    StringKeyword,
+};
+
+const Value = union(ValueKind){
+    Any,
     Number: f64,
     Bool: bool,
     String: String,
+    NumberKeyword,
+    BoolKeyword,
+    StringKeyword,
 
     fn number(value: f64) Value {
         return .{ .Number = value };
@@ -482,7 +696,6 @@ const String = struct {
     ptr: [*]const u8,
 
     pub fn as_str(self: String) []const u8 {
-        print("LEN: {d}\n", .{self.len});
         return self.ptr[0..self.len];
     }
 };
