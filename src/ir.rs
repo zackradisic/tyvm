@@ -69,7 +69,7 @@ impl<'ir> Expr<'ir> {
             Expr::Call(_) => false,
             Expr::If(_) => false,
             Expr::Array(arr) => arr.the_type.is_lit(),
-            Expr::Tuple(tup) => tup.types.iter().all(|t| t.is_lit()),
+            Expr::Tuple(tup) => tup.types.iter().all(|e| e.expr.is_lit()),
             Expr::Index(_) => false,
             Expr::Let(_) => false,
             Expr::Union(_) => false,
@@ -130,8 +130,13 @@ pub struct Array<'ir> {
 
 #[derive(Debug)]
 pub struct Tuple<'ir> {
-    pub types: AllocVec<'ir, &'ir Expr<'ir>>,
-    pub spread: Option<&'ir Expr<'ir>>,
+    pub types: AllocVec<'ir, TupleItem<'ir>>,
+}
+
+#[derive(Debug)]
+pub struct TupleItem<'ir> {
+    pub spread: bool,
+    pub expr: &'ir Expr<'ir>,
 }
 
 #[derive(Debug)]
@@ -370,39 +375,26 @@ impl<'ir> Transform<'ir> {
                 }),
             ),
             TSType::TSTupleType(tuple) => {
-                let spread = tuple.element_types.last().and_then(|ty| match ty {
-                    TSTupleElement::TSRestType(rest) => Some(
-                        self.arena
-                            .alloc(self.transform_type(&rest.type_annotation, false))
-                            as &_,
-                    ),
-                    _ => None,
-                });
-
-                let take_amount =
-                    tuple.element_types.len() - spread.as_ref().map(|_| 1).unwrap_or(0);
-
-                let elements: AllocVec<'ir, &'ir Expr<'ir>> = AllocVec::from_iter_in(
-                    tuple
-                        .element_types
-                        .iter()
-                        .take(take_amount)
-                        .map(|ty| match ty {
-                            TSTupleElement::TSType(ty) => {
-                                self.arena.alloc(self.transform_type(ty, false))
-                            }
-                            TSTupleElement::TSOptionalType(_) => todo!(),
-                            TSTupleElement::TSNamedTupleMember(_) => todo!(),
-                            TSTupleElement::TSRestType(_) => unreachable!(),
-                        })
-                        .map(|t| &*t),
+                let types: AllocVec<'ir, TupleItem<'ir>> = AllocVec::from_iter_in(
+                    tuple.element_types.iter().map(|ty| match ty {
+                        TSTupleElement::TSType(ty) => TupleItem {
+                            expr: self.arena.alloc(self.transform_type(ty, false)) as &_,
+                            spread: false,
+                        },
+                        TSTupleElement::TSRestType(rest) => TupleItem {
+                            spread: true,
+                            expr: self
+                                .arena
+                                .alloc(self.transform_type(&rest.type_annotation, false))
+                                as &_,
+                        },
+                        TSTupleElement::TSOptionalType(_) => todo!(),
+                        TSTupleElement::TSNamedTupleMember(_) => todo!(),
+                    }),
                     self.arena,
                 );
 
-                Expr::Tuple(self.arena.alloc(Tuple {
-                    types: elements,
-                    spread,
-                }))
+                Expr::Tuple(self.arena.alloc(Tuple { types }))
             }
             TSType::TSArrayType(array_ty) => {
                 let types = self

@@ -80,7 +80,7 @@ fn load_bytecode(self: *VM, bytecode: []const u8) !void {
 }
 
 pub fn run(self: *VM) !void {
-    self.stack_top = &self.stack;
+    self.stack_top = self.stack[0..];
 
     const global_fn: *const Function = self.functions.getPtr(ConstantTableIdx.new(0)).?;
 
@@ -97,7 +97,9 @@ pub fn run(self: *VM) !void {
         if (comptime TRACING) {
             const fn_name = self.read_constant(self.cur_call_frame().func.name).String;
             print("STACK:\n", .{});
-            const stack_len = @as(usize, @intFromPtr(self.stack_top)) / @sizeOf(Value) - @as(usize, @intFromPtr(self.stack[0..])) / @sizeOf(Value);
+            const stack_top_int: usize = @intFromPtr(self.stack_top);
+            const stack_bot_int: usize = @intFromPtr(self.stack[0..]);
+            const stack_len = stack_top_int / @sizeOf(Value) - stack_bot_int / @sizeOf(Value);
             for (0..stack_len) |i| {
                 print("    {?}\n", .{self.stack[i]});
             }
@@ -160,12 +162,13 @@ pub fn run(self: *VM) !void {
                 self.push(Value.array(Array.empty()));
             },
             .MakeArray => {
-                const count = frame.read_u32();
-                try self.make_array(count, false);
+                const count = frame.read_byte();
+                try self.make_array(count);
             },
             .MakeArraySpread => {
-                const count = frame.read_u32();
-                try self.make_array(count, true);
+                const count = frame.read_byte();
+                const spread_bitfield = frame.read_u256();
+                try self.make_array_spread(count, spread_bitfield);
             },
             .Extends => {
                 const b = self.pop();
@@ -282,22 +285,85 @@ fn extends_array_all_items(self: *VM, a_items: []const Value, b_item: Value) boo
     return true;
 }
 
-fn make_array(self: *VM, count: u32, comptime spread: bool) !void {
-    if (comptime spread) {
-        std.debug.assert(count >= 1);
+fn make_array_spread(self: *VM, count: u32, spread_bitfield: u256) !void {
+    const spread_count = @popCount(spread_bitfield);
+    std.debug.assert(spread_count > 0);
 
-        const values_len = count -| 1;
-        const values = if (values_len > 0) (self.stack_top - count)[0..values_len] else &[_]Value{};
+    var bitset = std.bit_set.IntegerBitSet(256).initEmpty();
+    bitset.mask = spread_bitfield;
 
-        const spread_value: Array = (self.stack_top - 1)[0].Array;
+    const array_args_base = self.stack_top - count;
 
-        const array = try Array.new(std.heap.c_allocator, values, if (spread_value.ptr) |ptr| ptr[0..spread_value.len] else &[_]Value{});
+    const total_size = size: {
+        var total: u32 = @as(u32, @intCast(count)) - @as(u32, @intCast(spread_count));
 
+        var iter = bitset.iterator(.{});
+        while (iter.next()) |idx| {
+            const val: Value = array_args_base[idx];
+            std.debug.assert(@as(ValueKind, val) == ValueKind.Array);
+            total += val.Array.len;
+        }
+        
+        break :size total;
+    };
+
+    if (total_size == 0) {
         self.pop_n(count);
-        self.push(Value.array(array));
+        self.push(Value.array(Array.empty()));
         return;
-    } 
+    }
 
+    var ptr = try std.heap.c_allocator.alloc(Value, total_size);
+
+    var prev: usize = 0; 
+    var iter = bitset.iterator(.{});
+    var i: usize = 0;
+    while (iter.next()) |idx| {
+        const diff = idx - prev;
+        // + => regular array item
+        // ^ => spread array item
+        //
+        // diff >= 1 means we need to push regular array items:
+        // 0 1 2 3 4 5 6
+        // + ^
+        if (diff >= 1) {
+            const start = prev;
+            // const end = idx - 1;
+            const end = idx;
+
+            const len = end - start;
+            @memcpy(ptr[i..i + len], array_args_base[start..end]);
+            i += len;
+        }
+
+        const val: Value = array_args_base[idx];
+        std.debug.assert(@as(ValueKind, val) == ValueKind.Array);
+        @memcpy(ptr[i..i + val.Array.len], val.Array.items());
+
+        i += val.Array.len;
+        prev = idx + 1;
+    }
+
+    // Process the rest
+    // prev = 4
+    // count = 7
+    // 0 1 2 3 4 5 6
+    // + ^ + + ^ + +
+    if (prev < count) {
+        const len = count - prev;
+        @memcpy(ptr[i..i + len], array_args_base[prev..count]);
+    }
+
+    const arr = Array {
+        .ptr = ptr.ptr,
+        .len = total_size,
+    };
+
+    self.pop_n(count);
+    self.push(Value.array(arr));
+}
+
+fn make_array(self: *VM, count: u32) !void {
     const items_ptr = self.stack_top - count;
     const items = items_ptr[0..count];
     const array = try Array.new(std.heap.c_allocator, items, &[_]Value{});
@@ -309,7 +375,7 @@ fn make_array(self: *VM, count: u32, comptime spread: bool) !void {
 fn call_main(self: *VM, main_name: ConstantTableIdx) !void {
     const count = 1;
     // TODO: read args from stdout
-    try self.make_array(count, false);
+    try self.make_array(count);
     std.debug.assert(
         @as(ValueKind, (self.stack_top - 1)[0]) == ValueKind.Array
     );
@@ -497,25 +563,31 @@ const CallFrame = struct {
         return self.slots[local];
     }
 
+    fn read_int(self: *CallFrame, comptime T: type) T {
+        const byte_amount = comptime @divExact(@typeInfo(T).Int.bits, 8);
+        const val = std.mem.readIntLittle(T, @ptrCast(self.ip[0..byte_amount]));
+        self.ip += byte_amount;
+        return val;
+    }
+
     fn read_byte(self: *CallFrame) u8 {
-        const byte = self.ip[0];
-        self.ip += 1;
-        return byte;
+        return self.read_int(u8);
+    }
+
+    fn read_u8(self: *CallFrame) u8 {
+        return self.read_int(u8);
     }
 
     fn read_u16(self: *CallFrame) u16 {
-        const short = @as(u16, @intCast(self.ip[1])) << 8 | @as(u16, @intCast(self.ip[0]));
-        self.ip += 2;
-        return short;
+        return self.read_int(u16);
     }
 
     fn read_u32(self: *CallFrame) u32 {
-        var val = @as(u32, @intCast(self.ip[3])) << 24;
-        val |= @as(u32, @intCast(self.ip[2])) << 16;
-        val |= @as(u32, @intCast(self.ip[1])) << 8;
-        val |= @as(u32, @intCast(self.ip[0]));
-        self.ip += 4;
-        return val;
+        return self.read_int(u32);
+    }
+
+    fn read_u256(self: *CallFrame) u256 {
+        return self.read_int(u256);
     }
 
     fn read_constant_idx(self: *CallFrame) ConstantTableIdx {
@@ -527,13 +599,27 @@ const Function = struct {
     name: ConstantTableIdx,
     code: []const u8,
 
-    pub fn read_u32(self: *const Function, i: *usize) u32 {
-        var val = @as(u32, @intCast(self.code[i.* + 3])) << 24;
-        val |= @as(u32, @intCast(self.code[i.* + 2])) << 16;
-        val |= @as(u32, @intCast(self.code[i.* + 1])) << 8;
-        val |= @as(u32, @intCast(self.code[i.* + 0]));
-        i.* = i.* + 4;
+    pub fn read_int(self: *const Function, comptime T: type, i: *usize) T {
+        const byte_amount = comptime @divExact(@typeInfo(T).Int.bits, 8);
+        const val = std.mem.readIntLittle(T, @ptrCast(self.code[i.*..i.* + byte_amount]));
+        i.* = i.* + byte_amount;
         return val;
+    }
+
+    pub fn read_u8(self: *const Function, i: *usize) u8 {
+        return self.read_int(u8, i);
+    }
+
+    pub fn read_u32(self: *const Function, i: *usize) u32 {
+        return self.read_int(u32, i);
+    }
+
+    pub fn read_u128(self: *const Function, i: *usize) u128 {
+        return self.read_int(u128, i);
+    }
+
+    pub fn read_u256(self: *const Function, i: *usize) u256 {
+        return self.read_int(u256, i);
     }
 
     pub fn read_constant_table_idx(self: *const Function, i: *usize) ConstantTableIdx {
@@ -647,12 +733,13 @@ const Function = struct {
                     std.debug.print("{} EmptyArray\n", .{j});
                 },
                 .MakeArray => {
-                    const count = self.read_u32(&i);
-                    std.debug.print("{} MakeArray {?}\n", .{j, count});
+                    const count = self.read_u8(&i);
+                    std.debug.print("{} MakeArray {d}\n", .{j, count});
                 },
                 .MakeArraySpread => {
-                    const count = self.read_u32(&i);
-                    std.debug.print("{} MakeArraySpread {d}\n", .{j, count});
+                    const count = self.read_u8(&i);
+                    const spread_bitfield = self.read_u256(&i);
+                    std.debug.print("{} MakeArraySpread {d} {d}\n", .{j, count, spread_bitfield});
                 },
                 .Index => {
                     std.debug.print("{} Index\n", .{j});
@@ -918,3 +1005,37 @@ const Object = extern struct {
 
     };
 };
+
+test "count spread" {
+    std.debug.print("HIHIIJKJLKJFD\n", .{});
+    const args = &[_]u8{1, 1, 1, 1, 12, 1, 42, 1, 69};
+    const spread_bitfield: u256 = 0b101010000;
+
+    const count = args.len;
+    const spread_count = @popCount(spread_bitfield);
+    const total_size = size: {
+        if (spread_count == 0) break :size count;
+
+        var total: u32 = @as(u32, @intCast(count)) - @as(u32, @intCast(spread_count));
+
+        var bitset = std.bit_set.IntegerBitSet(256).initEmpty();
+        bitset.mask = spread_bitfield;
+
+        var iter = bitset.iterator(.{});
+        while (iter.next()) |idx| {
+            const items = args[idx];
+            total += items;
+        }
+
+        break :size total;
+    };
+    std.debug.print("SIZE: {d}\n", .{ total_size });
+    const manual_size = manual: {
+        var i: usize = 0;
+        for (args) |a| {
+            i += a;
+        }
+        break :manual i;
+    };
+    try std.testing.expectEqual(manual_size, total_size);
+}

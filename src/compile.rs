@@ -4,7 +4,7 @@ use std::mem::size_of;
 use std::num::NonZeroUsize;
 
 use crate::common::AllocBox as Box;
-use crate::ir::{Expr, GlobalDecl};
+use crate::ir::{Expr, GlobalDecl, TupleItem};
 use crate::op::Op;
 use crate::{common::*, ir};
 
@@ -280,6 +280,10 @@ impl<'alloc> Compiler<'alloc> {
         self.cur_fn_mut().code.push_u8(a);
     }
 
+    fn push_u128(&mut self, a: u128) {
+        self.cur_fn_mut().code.push_u128(a);
+    }
+
     fn push_bytes(&mut self, a: u8, b: u8) {
         self.cur_fn_mut().code.push_bytes(a, b);
     }
@@ -459,8 +463,14 @@ impl<'alloc> Compiler<'alloc> {
                     }
                 }
             }
-            Expr::Array(array) => self.compile_array(&[array.the_type], None, expr.is_lit()),
-            Expr::Tuple(tup) => self.compile_array(tup.types.as_slice(), tup.spread, expr.is_lit()),
+            Expr::Array(array) => self.compile_array(
+                &[TupleItem {
+                    expr: array.the_type,
+                    spread: false,
+                }],
+                expr.is_lit(),
+            ),
+            Expr::Tuple(tup) => self.compile_array(tup.types.as_slice(), expr.is_lit()),
             ir::Expr::Intersect(intersect) => {
                 // If all arguments are object literals we can compile this to one big MakeObj op
                 // if intersect
@@ -635,13 +645,8 @@ impl<'alloc> Compiler<'alloc> {
         idx
     }
 
-    fn compile_array(
-        &mut self,
-        types: &[&ir::Expr<'alloc>],
-        spread: Option<&ir::Expr<'alloc>>,
-        is_lit: bool,
-    ) {
-        if types.is_empty() && spread.is_none() {
+    fn compile_array(&mut self, types: &[TupleItem<'alloc>], is_lit: bool) {
+        if types.is_empty() {
             self.push_op(Op::EmptyArray);
             return;
         }
@@ -649,18 +654,42 @@ impl<'alloc> Compiler<'alloc> {
         // TODO: constant arrays
         if is_lit {}
 
-        let mut count: u32 = types.len().try_into().unwrap();
-        types.iter().for_each(|t| self.compile_expr(t));
+        let spread_count: u32 = types
+            .iter()
+            .filter(|t| t.spread)
+            .count()
+            .try_into()
+            .unwrap();
 
-        if let Some(spread) = spread {
-            self.compile_expr(spread);
-            count += 1;
+        let count: u8 = types.len().try_into().unwrap();
+
+        types.iter().for_each(|t| self.compile_expr(t.expr));
+
+        if spread_count == 0 {
+            self.push_op(Op::MakeArray);
+            self.push_u8(count);
+            return;
         }
 
-        let op = spread.map(|_| Op::MakeArraySpread).unwrap_or(Op::MakeArray);
+        let mut bitfield1: u128 = 0;
+        let mut bitfield2: u128 = 0;
 
-        self.push_op(op);
-        self.push_u32(count);
+        self.push_op(Op::MakeArraySpread);
+        self.push_u8(count);
+        for (i, item) in types.iter().enumerate() {
+            if !item.spread {
+                continue;
+            }
+
+            if i >= 128 {
+                bitfield2 |= 1 << (i - 128);
+                continue;
+            }
+
+            bitfield1 |= 1 << i;
+        }
+        self.push_u128(bitfield1);
+        self.push_u128(bitfield2);
     }
 
     fn compile_ident(&mut self, ident: &ir::Ident<'alloc>) {
@@ -769,6 +798,10 @@ impl Code {
     }
 
     pub fn push_u32(&mut self, val: u32) {
+        self.buf.extend(val.to_le_bytes())
+    }
+
+    pub fn push_u128(&mut self, val: u128) {
         self.buf.extend(val.to_le_bytes())
     }
 

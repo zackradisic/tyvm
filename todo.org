@@ -1,6 +1,6 @@
 #+title: Todo
 
-* TODO fucking important [1/9]
+* TODO fucking important [2/10]
 ** TODO Unions [1/3]
 in terms of representation, we just need =Vec<Value>= for now. later we can do specialization for common like =T | undefined=
 
@@ -270,3 +270,16 @@ we shouldnt even use vec (because of borrowck)
 instead we can use our own repr with ptr + len
 
 also
+
+** DONE Handle spread properly
+Problem is spread can be in any arbitrary position in array literal, not just end:
+#+begin_src typescript
+type foo = [...Lol, 1, 2, ...Lmao, 4, 5, ...Nice]
+#+end_src
+
+The problem is knowing at runtime which elements are spread elements, and which are regular types and shouldn't be spread.
+
+- One idea is to pass this information as instruction operands ::
+  You pass the indices of the spread arguments as instruction operands. I see two options:
+  - pass them in as bit sets
+  - pass them in as count + N indices
