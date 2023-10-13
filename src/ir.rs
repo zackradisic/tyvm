@@ -25,6 +25,7 @@ pub enum Statement<'ir> {
 /// TODO: compact repr (box them bad boys son)
 #[derive(Debug)]
 pub enum Expr<'ir> {
+    Any,
     Identifier(Ident<'ir>),
     StringLiteral(&'ir StringLiteral),
     BooleanLiteral(&'ir BooleanLiteral),
@@ -51,8 +52,11 @@ impl<'ir> Expr<'ir> {
             _ => None,
         }
     }
+
+    /// This function returns true if the expression can be computed at compile time
     pub fn is_lit(&self) -> bool {
         match self {
+            Expr::Any => true,
             Expr::Identifier(_) => false,
             Expr::StringLiteral(_) => true,
             Expr::BooleanLiteral(_) => true,
@@ -127,6 +131,7 @@ pub struct Array<'ir> {
 #[derive(Debug)]
 pub struct Tuple<'ir> {
     pub types: AllocVec<'ir, &'ir Expr<'ir>>,
+    pub spread: Option<&'ir Expr<'ir>>,
 }
 
 #[derive(Debug)]
@@ -365,23 +370,39 @@ impl<'ir> Transform<'ir> {
                 }),
             ),
             TSType::TSTupleType(tuple) => {
+                let spread = tuple.element_types.last().and_then(|ty| match ty {
+                    TSTupleElement::TSRestType(rest) => Some(
+                        self.arena
+                            .alloc(self.transform_type(&rest.type_annotation, false))
+                            as &_,
+                    ),
+                    _ => None,
+                });
+
+                let take_amount =
+                    tuple.element_types.len() - spread.as_ref().map(|_| 1).unwrap_or(0);
+
                 let elements: AllocVec<'ir, &'ir Expr<'ir>> = AllocVec::from_iter_in(
                     tuple
                         .element_types
                         .iter()
+                        .take(take_amount)
                         .map(|ty| match ty {
                             TSTupleElement::TSType(ty) => {
                                 self.arena.alloc(self.transform_type(ty, false))
                             }
                             TSTupleElement::TSOptionalType(_) => todo!(),
-                            TSTupleElement::TSRestType(_) => todo!(),
                             TSTupleElement::TSNamedTupleMember(_) => todo!(),
+                            TSTupleElement::TSRestType(_) => unreachable!(),
                         })
                         .map(|t| &*t),
                     self.arena,
                 );
 
-                Expr::Tuple(self.arena.alloc(Tuple { types: elements }))
+                Expr::Tuple(self.arena.alloc(Tuple {
+                    types: elements,
+                    spread,
+                }))
             }
             TSType::TSArrayType(array_ty) => {
                 let types = self
@@ -472,7 +493,12 @@ impl<'ir> Transform<'ir> {
                                             ),
                                     }));
                                 }
-                                None => panic!("Array<...> requires one type parameter"),
+                                None => {
+                                    // return Expr::Tuple(self.arena.alloc(Tuple {
+                                    //     types: AllocVec::new_in(&self.arena),
+                                    //     spread: None,
+                                    // }))
+                                }
                             },
                             _ => (),
                         }
@@ -508,7 +534,7 @@ impl<'ir> Transform<'ir> {
             },
             TSType::TSNumberKeyword(_) => Expr::Number,
             TSType::TSStringKeyword(_) => Expr::String,
-            TSType::TSAnyKeyword(_) => todo!(),
+            TSType::TSAnyKeyword(_) => Expr::Any,
             TSType::TSBigIntKeyword(_) => todo!(),
             TSType::TSBooleanKeyword(_) => todo!(),
             TSType::TSNeverKeyword(_) => todo!(),

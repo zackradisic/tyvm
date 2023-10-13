@@ -151,6 +151,28 @@ impl<'alloc> Compiler<'alloc> {
         self.interned_strings.get(string).cloned()
     }
 
+    fn alloc_constant_object(&mut self, string: &'alloc str) -> ConstantTableIdx {
+        if let Some(idx) = self.interned_strings.get(string) {
+            return *idx;
+        }
+
+        let u32_size = size_of::<u32>();
+        // `u32_size * 2` because we need the bytes to be aligned to 8
+        // let size = (u32_size * 2) + string.as_bytes().len();
+        let size = u32_size + string.as_bytes().len();
+
+        let (idx, buf) =
+            self.alloc_constant_with_len(ConstantKind::String, size.try_into().unwrap());
+
+        let len = string.len() as u32;
+        buf[0..u32_size].copy_from_slice(&len.to_le_bytes());
+        buf[u32_size..].copy_from_slice(string.as_bytes());
+
+        self.interned_strings.insert(string, idx);
+
+        idx
+    }
+
     /// Allocates the given string in the constant pool. If the string already exists,
     /// it instead returns an index to the existing allocation.
     fn alloc_constant_string(&mut self, string: &'alloc str) -> ConstantTableIdx {
@@ -371,6 +393,9 @@ impl<'alloc> Compiler<'alloc> {
 
     fn compile_expr(&mut self, expr: &ir::Expr<'alloc>) {
         match expr {
+            Expr::Any => {
+                self.push_op(Op::Any);
+            }
             Expr::FormattedString(formatted_string) => {
                 let count: u8 = formatted_string.components.len().try_into().unwrap();
                 formatted_string
@@ -434,8 +459,8 @@ impl<'alloc> Compiler<'alloc> {
                     }
                 }
             }
-            Expr::Array(array) => self.compile_array(&[array.the_type]),
-            Expr::Tuple(tup) => self.compile_array(tup.types.as_slice()),
+            Expr::Array(array) => self.compile_array(&[array.the_type], None, expr.is_lit()),
+            Expr::Tuple(tup) => self.compile_array(tup.types.as_slice(), tup.spread, expr.is_lit()),
             ir::Expr::Intersect(intersect) => {
                 // If all arguments are object literals we can compile this to one big MakeObj op
                 // if intersect
@@ -580,7 +605,10 @@ impl<'alloc> Compiler<'alloc> {
                     _ => {
                         println!("NAME: {:?}", call.name());
                         let name_constant = self.alloc_constant_string(call.name());
-                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        // call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        for arg in call.args.iter() {
+                            self.compile_expr(arg);
+                        }
                         let name_str: &str = &call.name();
                         if !self.functions.contains_key(&name_constant) {
                             panic!("Unknown function name! {:?}", name_str)
@@ -607,11 +635,31 @@ impl<'alloc> Compiler<'alloc> {
         idx
     }
 
-    fn compile_array(&mut self, types: &[&ir::Expr<'alloc>]) {
-        let count: u32 = types.len().try_into().unwrap();
-        println!("TYPES: {:#?}", types);
+    fn compile_array(
+        &mut self,
+        types: &[&ir::Expr<'alloc>],
+        spread: Option<&ir::Expr<'alloc>>,
+        is_lit: bool,
+    ) {
+        if types.is_empty() && spread.is_none() {
+            self.push_op(Op::EmptyArray);
+            return;
+        }
+
+        // TODO: constant arrays
+        if is_lit {}
+
+        let mut count: u32 = types.len().try_into().unwrap();
         types.iter().for_each(|t| self.compile_expr(t));
-        self.push_op(Op::MakeArray);
+
+        if let Some(spread) = spread {
+            self.compile_expr(spread);
+            count += 1;
+        }
+
+        let op = spread.map(|_| Op::MakeArraySpread).unwrap_or(Op::MakeArray);
+
+        self.push_op(op);
         self.push_u32(count);
     }
 

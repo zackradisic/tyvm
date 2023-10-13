@@ -127,7 +127,7 @@ pub fn run(self: *VM) !void {
             },
             .CallMain => {
                 const main_name = frame.read_constant_idx();
-                self.call_main(main_name);
+                try self.call_main(main_name);
                 frame = self.cur_call_frame();
             },
             .Call => {
@@ -153,9 +153,19 @@ pub fn run(self: *VM) !void {
             .String => {
                 self.push(.StringKeyword);
             },
+            .Any => {
+                self.push(.Any);
+            },
+            .EmptyArray => {
+                self.push(Value.array(Array.empty()));
+            },
             .MakeArray => {
                 const count = frame.read_u32();
-                self.make_array(count);
+                try self.make_array(count, false);
+            },
+            .MakeArraySpread => {
+                const count = frame.read_u32();
+                try self.make_array(count, true);
             },
             .Extends => {
                 const b = self.pop();
@@ -198,7 +208,10 @@ pub fn run(self: *VM) !void {
                 if (@as(ValueKind, val) == ValueKind.String) {
                     print("{s}\n", .{val.String.as_str()});
                 } else {
-                    print("{?}\n", .{val});
+                    var buf = std.ArrayListUnmanaged(u8){};
+                    defer buf.deinit(std.heap.c_allocator);
+                    try val.encode_as_string(std.heap.c_allocator, &buf);
+                    print("{s}\n", .{buf.items.ptr[0..buf.items.len]});
                 }
                 self.pop_n(args_count);
             },
@@ -222,8 +235,7 @@ pub fn run(self: *VM) !void {
 }
 
 fn extends(self: *VM, a: Value, b: Value) bool {
-    _ = self;
-    if (b == .Any) return true;
+    if (b == .Any or a == .Any) return true;
     if (b == .NumberKeyword) return @as(ValueKind, a) == ValueKind.Number or @as(ValueKind, a) == ValueKind.NumberKeyword;
     if (b == .BoolKeyword) return @as(ValueKind, a) == ValueKind.Bool or @as(ValueKind, a) == ValueKind.BoolKeyword;
     if (b == .StringKeyword) return @as(ValueKind, a) == ValueKind.String or @as(ValueKind, a) == ValueKind.StringKeyword;
@@ -237,19 +249,70 @@ fn extends(self: *VM, a: Value, b: Value) bool {
     // break without a length check.
     if (@as(ValueKind, b) == .String) return @as(ValueKind, a) == .String and a.String.ptr == b.String.ptr;
 
+    if (@as(ValueKind, b) == .Array) return @as(ValueKind, a) == .Array and self.extends_array(a.Array, b.Array);
+
     return false;
 }
 
-fn make_array(self: *VM, count: u32) void {
-    _ = count;
-    // For now push dummy value 
-    self.push(.Any);
+fn extends_array(self: *VM, a: Array, b: Array) bool {
+    // Empty tuple
+    if (b.len == 0) return a.len == 0;
+    // `b` is an `Array<T>`, so either:
+    // 1. `a` is an empty tuple [] which extends any Array<T> 
+    // 2. `a` is either a tuple or regular Array<T>, in either case
+    //     all of its `items` need to extend `b`'s Array type
+    if (b.len == 1) return a.len == 0 or self.extends_array_all_items(a.items(), b.ptr.?[0]);
+    
+    // Now we know `b` is a tuple. Then `a` extends `b` if `a` is a tuple of the same size
+    // with each item extending the corresponding item in `b`
+
+    if (b.len != a.len) return false;
+
+    for (a.items(), b.items()) |av, bv| {
+        if (!self.extends(av, bv)) return false;
+    }
+
+    return true;
 }
 
-fn call_main(self: *VM, main_name: ConstantTableIdx) void {
-    const count = 0;
+fn extends_array_all_items(self: *VM, a_items: []const Value, b_item: Value) bool {
+    for (a_items) |item| {
+        if (!self.extends(item, b_item)) return false;
+    }
+    return true;
+}
+
+fn make_array(self: *VM, count: u32, comptime spread: bool) !void {
+    if (comptime spread) {
+        std.debug.assert(count >= 1);
+
+        const values_len = count -| 1;
+        const values = if (values_len > 0) (self.stack_top - count)[0..values_len] else &[_]Value{};
+
+        const spread_value: Array = (self.stack_top - 1)[0].Array;
+
+        const array = try Array.new(std.heap.c_allocator, values, if (spread_value.ptr) |ptr| ptr[0..spread_value.len] else &[_]Value{});
+
+        self.pop_n(count);
+        self.push(Value.array(array));
+        return;
+    } 
+
+    const items_ptr = self.stack_top - count;
+    const items = items_ptr[0..count];
+    const array = try Array.new(std.heap.c_allocator, items, &[_]Value{});
+
+    self.pop_n(count);
+    self.push(Value.array(array));
+}
+
+fn call_main(self: *VM, main_name: ConstantTableIdx) !void {
+    const count = 1;
     // TODO: read args from stdout
-    self.make_array(count);
+    try self.make_array(count, false);
+    std.debug.assert(
+        @as(ValueKind, (self.stack_top - 1)[0]) == ValueKind.Array
+    );
     self.call(count, main_name, false);
 }
 
@@ -385,6 +448,11 @@ const Bytecode = struct {
     };
 };
 
+const ConstantString = extern struct {
+    len: u32 align(8),
+    ptr: [*]const u8
+};
+
 const ConstantTableIdx = extern struct {
     v: u32,
 
@@ -503,6 +571,9 @@ const Function = struct {
                 .String => {
                     std.debug.print("{} String\n", .{j});
                 },
+                .Any => {
+                    std.debug.print("{} Any\n", .{j});
+                },
                 .Add => {
                     std.debug.print("{} ADD\n", .{j});
                 },
@@ -551,7 +622,10 @@ const Function = struct {
                     const idx = self.read_constant_table_idx(&i);
                     std.debug.print("{} GET GLOBAL {?}\n", .{j, vm.read_constant(idx)});
                 },
-                .PanicExtends, .Extends, .ExtendsNoPopLeft => {
+                .PanicExtends => {
+                    std.debug.print("{} PanicExtends\n", .{j});
+                },
+                .Extends, .ExtendsNoPopLeft => {
                     const skip_then = @as(u16, @intCast(self.code[i + 1])) << 8 | @as(u16, @intCast(self.code[i]));
                     i += 2;
                     std.debug.print("{} {?} (skip_then={})\n", .{j, op, skip_then});
@@ -569,9 +643,16 @@ const Function = struct {
                     i += 1;
                     std.debug.print("{} Make obj {?}\n", .{j, count});
                 },
+                .EmptyArray => {
+                    std.debug.print("{} EmptyArray\n", .{j});
+                },
                 .MakeArray => {
                     const count = self.read_u32(&i);
                     std.debug.print("{} MakeArray {?}\n", .{j, count});
+                },
+                .MakeArraySpread => {
+                    const count = self.read_u32(&i);
+                    std.debug.print("{} MakeArraySpread {d}\n", .{j, count});
                 },
                 .Index => {
                     std.debug.print("{} Index\n", .{j});
@@ -664,7 +745,9 @@ const Op = enum(u8) {
     PopCallFrame,
     // next instr is fields
     MakeObj,
+    EmptyArray,
     MakeArray,
+    MakeArraySpread,
     MakeUnion,
 
     Index,
@@ -681,28 +764,40 @@ const Op = enum(u8) {
     GetGlobal,
 
     FormatString,
+    Any,
+    Length,
 
     Exit,
 };
 
 const ValueKind = enum {
     Any,
-    Number,
-    Bool,
-    String,
     NumberKeyword,
     BoolKeyword,
     StringKeyword,
+
+    Number,
+    Bool,
+    String,
+    Array,
 };
 
 const Value = union(ValueKind){
     Any,
-    Number: f64,
-    Bool: bool,
-    String: String,
     NumberKeyword,
     BoolKeyword,
     StringKeyword,
+
+    Number: f64,
+    Bool: bool,
+    String: String,
+    Array: Array,
+
+    fn array(value: Array) Value {
+        return .{
+            .Array = value
+        };
+    }
 
     fn number(value: f64) Value {
         return .{ .Number = value };
@@ -716,35 +811,61 @@ const Value = union(ValueKind){
         return .{ .String = value };
     }
 
+    fn debug(self: Value, alloc: Allocator) !void {
+        var buf = std.ArrayListUnmanaged(u8){};
+        try self.encode_as_string(alloc, &buf);
+        print("VALUE: {s}\n", .{buf.items.ptr[0..buf.items.len]});
+    }
+
     fn encode_as_string(self: Value, alloc: Allocator, buf: *std.ArrayListUnmanaged(u8)) !void {
         switch (self) {
             .Any, .NumberKeyword, .BoolKeyword, .StringKeyword => @panic("Unhandled"),
             .String => |v|{
-                const len = std.fmt.count("{s}", .{v.as_str()});
-                try buf.ensureUnusedCapacity(alloc, len);
-                var insertion_slice = buf.items.ptr[buf.items.len..buf.items.len + len];
-                _ = try std.fmt.bufPrint(insertion_slice, "{s}", .{v.as_str()});
-                buf.items.len += len;
+                try write_str_expand(alloc, buf, "{s}", .{v.as_str()});
             },
             .Bool => |v| {
-                const len = if (v) "true".len else "false".len;
-                try buf.ensureUnusedCapacity(alloc, len);
-                try buf.appendSlice(std.heap.c_allocator, if (v) "true" else "false");
+                if (v) {
+                    try write_str_expand(alloc, buf, "true", .{});
+                } else {
+                    try write_str_expand(alloc, buf, "false", .{});
+                }
             },
             .Number => |v| {
-                const len = std.fmt.count("{d}", .{v});
-                try buf.ensureUnusedCapacity(alloc, len);
-                var insertion_slice = buf.items.ptr[buf.items.len..buf.items.len + len];
-                _ = try std.fmt.bufPrint(insertion_slice, "{d}", .{v});
-                buf.items.len += len;
+                try write_str_expand(alloc, buf, "{d}", .{v});
+            },
+            .Array => |v| {
+                try write_str_expand(alloc, buf, "[", .{});
+                if (v.ptr) |ptr| {
+                    const last = v.len -| 1;
+                    for (ptr[0..v.len], 0..) |val, i| {
+                        try val.encode_as_string(alloc, buf);
+                        if (i != last) try write_str_expand(alloc, buf, ", ", .{});
+                }
+                }
+                try write_str_expand(alloc, buf, "]\n", .{});
             }
         }
     }
 };
 
+fn write_str_expand(alloc: Allocator, buf: *std.ArrayListUnmanaged(u8), comptime fmt: []const u8, args: anytype) !void {
+    const len = std.fmt.count(fmt, args);
+    try buf.ensureUnusedCapacity(alloc, len);
+    var insertion_slice = buf.items.ptr[buf.items.len..buf.items.len + len];
+    _ = try std.fmt.bufPrint(insertion_slice, fmt, args);
+    buf.items.len += len;
+}
+
 const String = struct {
-    len: u32,
     ptr: [*]const u8,
+    len: u32 align(8),
+
+    pub fn from_constant(constant: ConstantString) String {
+        return .{
+            .ptr = constant.ptr,
+            .len = constant.len,
+        };
+    }
 
     pub fn as_str(self: String) []const u8 {
         return self.ptr[0..self.len];
@@ -756,4 +877,44 @@ const String = struct {
             .ptr = @ptrCast(slice.ptr),
         };
     }
+};
+
+const Array = struct {
+    ptr: ?[*]const Value align(8),
+    len: u32,
+
+    pub fn new(alloc: Allocator, values: []const Value, spread: []const Value) !Array {
+        var ptr = try alloc.alloc(Value, values.len + spread.len);
+
+        if (values.len > 0) @memcpy(ptr[0..values.len], values);
+        if (spread.len > 0) @memcpy(ptr[values.len..values.len + spread.len], spread);
+
+        return .{
+            .ptr = @ptrCast(ptr),
+            .len = @intCast(values.len + spread.len),
+        };
+    }
+
+    pub fn items(self: *const Array) []const Value {
+        if (self.ptr) |ptr| {
+            return ptr[0..self.len];
+        }
+        return &[_]Value{};
+    }
+
+    pub fn empty() Array {
+        return .{
+            .ptr = null,
+            .len = 0,
+        };
+    }
+};
+
+const Object = extern struct { 
+    fields: [*]Field,
+    len: u32 align(8),
+
+    const Field = extern struct {
+
+    };
 };

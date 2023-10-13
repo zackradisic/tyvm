@@ -29,7 +29,9 @@ pub enum Op {
     PopCallFrame,
     // next instr is fields
     MakeObj,
+    EmptyArray,
     MakeArray,
+    MakeArraySpread,
     MakeUnion,
 
     Index,
@@ -46,6 +48,8 @@ pub enum Op {
     GetGlobal,
 
     FormatString,
+    Any,
+    Length,
 
     Exit,
 }

@@ -1,6 +1,6 @@
 #+title: Todo
 
-* TODO fucking important [1/12]
+* TODO fucking important [1/9]
 ** TODO Unions [1/3]
 in terms of representation, we just need =Vec<Value>= for now. later we can do specialization for common like =T | undefined=
 
@@ -141,6 +141,26 @@ type CheckResult = Check<{}>;
 #+end_src
 
 so we need to preserve this optional information
+** TODO Recursive function argument =extends= optimization
+When recursively calling a function, the =extends= check may be redundantly called:
+#+begin_src typescript
+type FillArrayImpl<
+  Count extends number,
+  I extends number,
+  Value,
+  Array extends any[]
+> = I extends Count
+  ? Array
+  : FillArrayImpl<Count, Add<I, 1>, Value, [Value, ...Array]>;
+#+end_src
+
+In the above example, when =FillArrayImpl<...>= is recursively called, all of its arguments will undergo a needless extends check.
+
+We can optimize them away.
+
+In the most trivial case, identifiers that are reused can have their extends check omitted. For example, =Count= is untouched and passed again to =FillArrayImpl=. When we first call =FillArrayImpl=, we check =Count extends number=, then we don't touch it and then pass it again to the function.
+
+These optimizations would require a refactor to /when/ the extends check takes place. Right now, the checks happen /inside/ the function. We'll have to do them /before/ the function.
 ** TODO Template literals with non-literal types
 Template literals work with literal types:
 #+begin_src typescript
@@ -160,16 +180,11 @@ You can still concat new strings though:
 // `hehe ${any}wow 420`
 type lmao = `${foo}wow ${420}`
 #+end_src
-** TODO index num lit
+** TODO Index numeric literals optimization
 can speed up index operations if we make specialization ops for indexing
 
 for example =myarray[0]= is a common expression, specifically indexing with a number constant literal
-** TODO =length= key on arrays
-** TODO string interning
-this is really important, otherwise string value equality won't work
-** TODO make =extends= a method on =Value= so it can be used in compiler??
-** TODO string interpolation
-** TODO unions
+** TODO Accessing =length= key on arrays
 ** TODO GC
 * TODO brainstorming
 ** TODO use immutable / persistent data structures
@@ -188,6 +203,9 @@ what if the key/vals for an object were a slice/window of the stack?
 ** TODO Make ir repr more compact
 some places where we can box stuff
 * TODO archive
+** DONE String interpolation
+** DONE string interning
+this is really important, otherwise string value equality won't work
 ** DONE globals non-forward declarations all fucked lol
 evaluation of order can't be strictly top down
 
