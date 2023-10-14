@@ -6,6 +6,7 @@ use crate::common::*;
 
 use oxc_ast::ast;
 use oxc_ast::ast::*;
+use oxc_syntax::operator::UnaryOperator;
 
 pub struct Transform<'ir> {
     pub arena: &'ir Arena,
@@ -31,6 +32,7 @@ pub enum Expr<'ir> {
     BooleanLiteral(&'ir BooleanLiteral),
     NumberLiteral(&'ir NumberLiteral<'ir>),
     Number,
+    Boolean,
     String,
     Object(&'ir Object<'ir>),
     ObjectLit(&'ir ObjectLit<'ir>),
@@ -43,6 +45,7 @@ pub enum Expr<'ir> {
     Let(&'ir Let<'ir>),
     Union(&'ir Union<'ir>),
     FormattedString(&'ir FormattedString<'ir>),
+    Unary(&'ir Unary<'ir>),
 }
 
 impl<'ir> Expr<'ir> {
@@ -61,6 +64,7 @@ impl<'ir> Expr<'ir> {
             Expr::StringLiteral(_) => true,
             Expr::BooleanLiteral(_) => true,
             Expr::NumberLiteral(_) => true,
+            Expr::Boolean => true,
             Expr::Number => true,
             Expr::String => true,
             Expr::Object(obj) => obj.can_be_object_lit(),
@@ -74,6 +78,7 @@ impl<'ir> Expr<'ir> {
             Expr::Let(_) => false,
             Expr::Union(_) => false,
             Expr::FormattedString(_) => false,
+            Expr::Unary(unary) => unary.expr.is_lit(),
         }
     }
 }
@@ -162,6 +167,12 @@ pub struct Union<'ir> {
 #[derive(Debug)]
 pub struct FormattedString<'ir> {
     pub components: AllocVec<'ir, Expr<'ir>>,
+}
+
+#[derive(Debug)]
+pub struct Unary<'ir> {
+    pub op: UnaryOperator,
+    pub expr: Expr<'ir>,
 }
 
 #[derive(Debug, PartialEq, PartialOrd, Eq, Ord, Clone, Copy)]
@@ -362,7 +373,7 @@ impl<'ir> Transform<'ir> {
                 Expr::FormattedString(self.arena.alloc(FormattedString { components }))
             }
             TSType::TSUnionType(union) => {
-                todo!()
+                todo!("UNION: {:#?}", union)
             }
             TSType::TSIndexedAccessType(index) => Expr::Index(
                 self.arena.alloc(Index {
@@ -522,13 +533,19 @@ impl<'ir> Transform<'ir> {
                 TSLiteral::BigintLiteral(_) => todo!(),
                 TSLiteral::RegExpLiteral(_) => todo!(),
                 TSLiteral::TemplateLiteral(_) => todo!(),
-                TSLiteral::UnaryExpression(_) => todo!(),
+                TSLiteral::UnaryExpression(unary) => match unary.operator {
+                    UnaryOperator::UnaryNegation => Expr::Unary(self.arena.alloc(Unary {
+                        op: UnaryOperator::UnaryNegation,
+                        expr: self.transform_expr(&unary.argument, tail_call),
+                    })),
+                    _ => todo!(),
+                },
             },
             TSType::TSNumberKeyword(_) => Expr::Number,
             TSType::TSStringKeyword(_) => Expr::String,
             TSType::TSAnyKeyword(_) => Expr::Any,
+            TSType::TSBooleanKeyword(_) => Expr::Boolean,
             TSType::TSBigIntKeyword(_) => todo!(),
-            TSType::TSBooleanKeyword(_) => todo!(),
             TSType::TSNeverKeyword(_) => todo!(),
             TSType::TSNullKeyword(_) => todo!(),
             TSType::TSObjectKeyword(_) => todo!(),
@@ -548,6 +565,51 @@ impl<'ir> Transform<'ir> {
             TSType::JSDocNullableType(_) => todo!(),
             TSType::JSDocUnknownType(_) => todo!(),
             TSType::TSInferType(_) => todo!(),
+        }
+    }
+
+    fn transform_expr(&self, expr: &'ir ast::Expression<'ir>, tail_call: bool) -> Expr<'ir> {
+        match expr {
+            Expression::NumberLiteral(num) => Expr::NumberLiteral(num),
+            Expression::BooleanLiteral(_) => todo!(),
+            Expression::NullLiteral(_) => todo!(),
+            Expression::BigintLiteral(_) => todo!(),
+            Expression::RegExpLiteral(_) => todo!(),
+            Expression::StringLiteral(_) => todo!(),
+            Expression::TemplateLiteral(_) => todo!(),
+            Expression::Identifier(_) => todo!(),
+            Expression::MetaProperty(_) => todo!(),
+            Expression::Super(_) => todo!(),
+            Expression::ArrayExpression(_) => todo!(),
+            Expression::ArrowExpression(_) => todo!(),
+            Expression::AssignmentExpression(_) => todo!(),
+            Expression::AwaitExpression(_) => todo!(),
+            Expression::BinaryExpression(_) => todo!(),
+            Expression::CallExpression(_) => todo!(),
+            Expression::ChainExpression(_) => todo!(),
+            Expression::ClassExpression(_) => todo!(),
+            Expression::ConditionalExpression(_) => todo!(),
+            Expression::FunctionExpression(_) => todo!(),
+            Expression::ImportExpression(_) => todo!(),
+            Expression::LogicalExpression(_) => todo!(),
+            Expression::MemberExpression(_) => todo!(),
+            Expression::NewExpression(_) => todo!(),
+            Expression::ObjectExpression(_) => todo!(),
+            Expression::ParenthesizedExpression(_) => todo!(),
+            Expression::SequenceExpression(_) => todo!(),
+            Expression::TaggedTemplateExpression(_) => todo!(),
+            Expression::ThisExpression(_) => todo!(),
+            Expression::UnaryExpression(_) => todo!(),
+            Expression::UpdateExpression(_) => todo!(),
+            Expression::YieldExpression(_) => todo!(),
+            Expression::PrivateInExpression(_) => todo!(),
+            Expression::JSXElement(_) => todo!(),
+            Expression::JSXFragment(_) => todo!(),
+            Expression::TSAsExpression(_) => todo!(),
+            Expression::TSSatisfiesExpression(_) => todo!(),
+            Expression::TSTypeAssertion(_) => todo!(),
+            Expression::TSNonNullExpression(_) => todo!(),
+            Expression::TSInstantiationExpression(_) => todo!(),
         }
     }
 }

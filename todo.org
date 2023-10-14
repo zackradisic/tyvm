@@ -98,6 +98,8 @@ type fakenumber = {
 // this returns "not extends"
 type result = Test<fakenumber, number>
 #+end_src
+
+Also note that the =object= keyword
 ** TODO Optional fields/types
 we have optional types:
 #+begin_src typescript

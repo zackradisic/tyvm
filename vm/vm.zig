@@ -152,6 +152,9 @@ pub fn run(self: *VM) !void {
             .Number => {
                 self.push(.NumberKeyword);
             },
+            .Boolean => {
+                self.push(.BoolKeyword);
+            },
             .String => {
                 self.push(.StringKeyword);
             },
@@ -235,6 +238,9 @@ pub fn run(self: *VM) !void {
                 str_array.shrinkAndFree(std.heap.c_allocator, str_array.items.len);
                 self.pop_n(args_count);
                 self.push(Value.string(String.from_slice(str_array.items)));
+            },
+            .Negate => {
+                self.push(self.pop().negate());
             },
             .Exit => return,
             else => { 
@@ -661,6 +667,9 @@ const Function = struct {
                 .Number => {
                     std.debug.print("{} Number\n", .{j});
                 },
+                .Boolean => {
+                    std.debug.print("{} Boolean\n", .{j});
+                },
                 .String => {
                     std.debug.print("{} String\n", .{j});
                 },
@@ -761,6 +770,9 @@ const Function = struct {
                     i += 1;
                     std.debug.print("{} FormatString {?}\n", .{j, count});
                 },
+                .Negate => {
+                    std.debug.print("{} Negate\n", .{j});
+                },
                 .Exit => {
                     std.debug.print("{} Exit\n", .{j});
                 },
@@ -835,6 +847,7 @@ const Op = enum(u8) {
     PanicExtends,
     Jump,
     Number,
+    Boolean,
     String,
     PopCallFrame,
     // next instr is fields
@@ -860,6 +873,7 @@ const Op = enum(u8) {
     FormatString,
     Any,
     Length,
+    Negate,
 
     Exit,
 };
@@ -886,6 +900,13 @@ const Value = union(ValueKind){
     Bool: bool,
     String: String,
     Array: Array,
+
+    fn negate(self: Value) Value {
+        switch (self) {
+            .Number => |v| return Value.number(-v),
+            else => @panic("Invalid negation"),
+        }
+    }
 
     fn array(value: Array) Value {
         return .{

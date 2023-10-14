@@ -4,12 +4,13 @@ use std::mem::size_of;
 use std::num::NonZeroUsize;
 
 use crate::common::AllocBox as Box;
-use crate::ir::{Expr, GlobalDecl, TupleItem};
+use crate::ir::{Expr, GlobalDecl, TupleItem, Unary};
 use crate::op::Op;
 use crate::{common::*, ir};
 
 use oxc_ast::ast;
 use oxc_ast::ast::*;
+use oxc_syntax::operator::UnaryOperator;
 
 pub const GLOBAL_STR: &'static str = "__tyvm_global";
 pub const MAIN_STR: &'static str = "Main";
@@ -397,6 +398,15 @@ impl<'alloc> Compiler<'alloc> {
 
     fn compile_expr(&mut self, expr: &ir::Expr<'alloc>) {
         match expr {
+            Expr::Boolean => self.push_op(Op::Boolean),
+            Expr::Unary(Unary {
+                op: UnaryOperator::UnaryNegation,
+                expr,
+            }) => {
+                self.compile_expr(expr);
+                self.push_op(Op::Negate)
+            }
+            Expr::Unary(_) => todo!(),
             Expr::Any => {
                 self.push_op(Op::Any);
             }

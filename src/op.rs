@@ -25,6 +25,7 @@ pub enum Op {
     PanicExtends,
     Jump,
     Number,
+    Boolean,
     String,
     PopCallFrame,
     // next instr is fields
@@ -50,6 +51,8 @@ pub enum Op {
     FormatString,
     Any,
     Length,
+
+    Negate,
 
     Exit,
 }
