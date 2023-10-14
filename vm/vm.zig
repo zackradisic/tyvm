@@ -191,7 +191,14 @@ pub fn run(self: *VM) !void {
             },
             .GetGlobal => {
                 const constant_idx = frame.read_constant_idx();
-                self.push(self.read_constant(constant_idx));
+                const global = self.globals.get(constant_idx).?;
+                self.push(global);
+            },
+            .SetGlobal => {
+                const constant_idx = frame.read_constant_idx();
+                const value = self.pop();
+                try value.debug(std.heap.c_allocator);
+                try self.globals.put(constant_idx, value);
             },
             .Jump => {
                 const offset = frame.read_u16();
