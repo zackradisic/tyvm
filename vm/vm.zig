@@ -964,7 +964,7 @@ const Value = union(ValueKind){
 };
 
 fn write_str_expand(alloc: Allocator, buf: *std.ArrayListUnmanaged(u8), comptime fmt: []const u8, args: anytype) !void {
-    const len = std.fmt.count(fmt, args);
+    const len: usize = @intCast(std.fmt.count(fmt, args));
     try buf.ensureUnusedCapacity(alloc, len);
     var insertion_slice = buf.items.ptr[buf.items.len..buf.items.len + len];
     _ = try std.fmt.bufPrint(insertion_slice, fmt, args);
