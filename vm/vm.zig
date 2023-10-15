@@ -238,7 +238,7 @@ pub fn run(self: *VM) !void {
                 }
                 str_array.shrinkAndFree(std.heap.c_allocator, str_array.items.len);
                 self.pop_n(args_count);
-                self.push(Value.string(String.from_slice(str_array.items)));
+                self.push(Value.string(self.new_string_from_slice(str_array.items)));
             },
             .Negate => {
                 self.push(self.pop().negate());
@@ -367,6 +367,13 @@ fn extends_array_all_items(self: *VM, a_items: []const Value, b_item: Value) boo
         if (!self.extends(item, b_item)) return false;
     }
     return true;
+}
+
+fn new_string_from_slice(self: *VM, slice: []const u8) String {
+    return self.interned_strings.get(slice) orelse .{
+        .len = @intCast(slice.len),
+        .ptr = @ptrCast(slice.ptr),
+    };
 }
 
 fn make_array_spread(self: *VM, count: u32, spread_bitfield: u256) !void {
@@ -1094,13 +1101,6 @@ const String = struct {
 
     pub fn as_str(self: String) []const u8 {
         return self.ptr[0..self.len];
-    }
-
-    pub fn from_slice(slice: []const u8) String {
-        return .{
-            .len = @intCast(slice.len),
-            .ptr = @ptrCast(slice.ptr),
-        };
     }
 
     pub fn cmp(a: *const String, b: *const String) Order {
