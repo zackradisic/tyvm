@@ -17,7 +17,7 @@ type FibIter<
   : FibIter<N, Add<I, 1>, Add<NminusOne, NminusTwo>, NminusOne>;
 
 export type Main<Argv extends string[]> =
-  Print<`Value is ${Fib<1>}${"wow"} yay`>;
+  Print<`Value is ${Fib<10>}${"wow"} yay`>;
 
 // export type Main<Argv extends string[]> = ParseInt<
 //   Argv[0]

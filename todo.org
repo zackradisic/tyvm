@@ -1,7 +1,7 @@
 #+title: Todo
 
-* TODO fucking important [1/14]
-** TODO Need distinction between Tuple vs. Array
+* TODO fucking important [2/14]
+** DONE Need distinction between Tuple vs. Array
 ** TODO Unions [1/3]
 in terms of representation, we just need =Vec<Value>= for now. later we can do specialization for common like =T | undefined=
 
@@ -20,6 +20,8 @@ type result = Extends<a, b>;
 
 if we do the algorithm on objects where we check every key of =a= is subtype of every variant of union =b= it will fail, because:
 #+begin_src typescript
+// a['foo'] ==> 1 | 2
+
 // not extends
 type result = Extends<1 | 2, 1>
 // not extends

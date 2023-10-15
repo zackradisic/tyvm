@@ -33,3 +33,11 @@ type t7 = ExtendsCheck<number, object>;
 type t8 = ExtendsCheck<{}, {}>;
 
 // type t9 = ExtendsCheck<null, undefined>;
+
+type Extends<A, B> = A extends B ? "extends" : "not extends";
+
+type a = { foo: 1 | 2 };
+type b = { foo: 1 } | { foo: 2 };
+
+// extends
+type result = Extends<a, b>;

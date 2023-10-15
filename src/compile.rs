@@ -455,14 +455,8 @@ impl<'alloc> Compiler<'alloc> {
                     }
                 }
             }
-            Expr::Array(array) => self.compile_array(
-                &[TupleItem {
-                    expr: array.the_type,
-                    spread: false,
-                }],
-                expr.is_comptime_known(),
-            ),
-            Expr::Tuple(tup) => self.compile_array(tup.types.as_slice(), expr.is_comptime_known()),
+            Expr::Array(array) => self.compile_array(array.the_type, expr.is_comptime_known()),
+            Expr::Tuple(tup) => self.compile_tuple(tup.types.as_slice(), expr.is_comptime_known()),
             ir::Expr::Intersect(intersect) => {
                 // If all arguments are object literals we can compile this to one big MakeObj op
                 // if intersect
@@ -646,14 +640,22 @@ impl<'alloc> Compiler<'alloc> {
         idx
     }
 
-    fn compile_array(&mut self, types: &[TupleItem<'alloc>], is_lit: bool) {
+    fn compile_array(&mut self, item: &Expr<'alloc>, is_comptime_known: bool) {
+        // TODO: constant tuples
+        if is_comptime_known {}
+
+        self.compile_expr(item);
+        self.push_op(Op::MakeArray);
+    }
+
+    fn compile_tuple(&mut self, types: &[TupleItem<'alloc>], is_comptime_known: bool) {
         if types.is_empty() {
-            self.push_op(Op::EmptyArray);
+            self.push_op(Op::EmptyTuple);
             return;
         }
 
-        // TODO: constant arrays
-        if is_lit {}
+        // TODO: constant tuples
+        if is_comptime_known {}
 
         let spread_count: u32 = types
             .iter()
@@ -667,7 +669,7 @@ impl<'alloc> Compiler<'alloc> {
         types.iter().for_each(|t| self.compile_expr(t.expr));
 
         if spread_count == 0 {
-            self.push_op(Op::MakeArray);
+            self.push_op(Op::MakeTuple);
             self.push_u8(count);
             return;
         }
@@ -675,7 +677,7 @@ impl<'alloc> Compiler<'alloc> {
         let mut bitfield1: u128 = 0;
         let mut bitfield2: u128 = 0;
 
-        self.push_op(Op::MakeArraySpread);
+        self.push_op(Op::MakeTupleSpread);
         self.push_u8(count);
         for (i, item) in types.iter().enumerate() {
             if !item.spread {

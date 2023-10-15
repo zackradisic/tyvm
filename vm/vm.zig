@@ -162,14 +162,17 @@ pub fn run(self: *VM) !void {
             .Any => {
                 self.push(.Any);
             },
-            .EmptyArray => {
-                self.push(Value.array(Array.empty()));
+            .EmptyTuple => {
+                self.push(Value.array(Array.empty_tuple()));
             },
             .MakeArray => {
-                const count = frame.read_byte();
-                try self.make_array(count);
+                try self.make_array(false, 1);
             },
-            .MakeArraySpread => {
+            .MakeTuple => {
+                const count = frame.read_byte();
+                try self.make_array(true, count);
+            },
+            .MakeTupleSpread => {
                 const count = frame.read_byte();
                 const spread_bitfield = frame.read_u256();
                 try self.make_array_spread(count, spread_bitfield);
@@ -348,7 +351,7 @@ fn extends_array(self: *VM, a: Array, b: Array) bool {
     // 1. `a` is an empty tuple [] which extends any Array<T> 
     // 2. `a` is either a tuple or regular Array<T>, in either case
     //     all of its `items` need to extend `b`'s Array type
-    if (b.len == 1) return a.len == 0 or self.extends_array_all_items(a.items(), b.ptr.?[0]);
+    if (!b.is_tuple_array()) return a.len == 0 or self.extends_array_all_items(a.items(), b.ptr.?[0]);
     
     // Now we know `b` is a tuple. Then `a` extends `b` if `a` is a tuple of the same size
     // with each item extending the corresponding item in `b`
@@ -400,7 +403,7 @@ fn make_array_spread(self: *VM, count: u32, spread_bitfield: u256) !void {
 
     if (total_size == 0) {
         self.pop_n(count);
-        self.push(Value.array(Array.empty()));
+        self.push(Value.array(Array.empty_tuple()));
         return;
     }
 
@@ -448,16 +451,20 @@ fn make_array_spread(self: *VM, count: u32, spread_bitfield: u256) !void {
     const arr = Array {
         .ptr = ptr.ptr,
         .len = total_size,
+        .flags = Array.Flags {
+            .is_tuple = true,
+        },
     };
 
     self.pop_n(count);
     self.push(Value.array(arr));
 }
 
-fn make_array(self: *VM, count: u32) !void {
+fn make_array(self: *VM, comptime is_tuple: bool, count: u32) !void {
+    if (!is_tuple) std.debug.assert(count == 1);
     const items_ptr = self.stack_top - count;
     const items = items_ptr[0..count];
-    const array = try Array.new(std.heap.c_allocator, items, &[_]Value{});
+    const array = try Array.new(std.heap.c_allocator, is_tuple, items, &[_]Value{});
 
     self.pop_n(count);
     self.push(Value.array(array));
@@ -466,7 +473,7 @@ fn make_array(self: *VM, count: u32) !void {
 fn call_main(self: *VM, main_name: ConstantTableIdx) !void {
     const count = 1;
     // TODO: read args from stdout
-    try self.make_array(count);
+    try self.make_array(true, count);
     std.debug.assert(
         @as(ValueKind, (self.stack_top - 1)[0]) == ValueKind.Array
     );
@@ -822,17 +829,20 @@ const Function = struct {
                     const count = self.read_u8(&i);
                     std.debug.print("{} Make obj {?}\n", .{j, count});
                 },
-                .EmptyArray => {
-                    std.debug.print("{} EmptyArray\n", .{j});
-                },
                 .MakeArray => {
-                    const count = self.read_u8(&i);
-                    std.debug.print("{} MakeArray {d}\n", .{j, count});
+                    std.debug.print("{} MakeArray\n", .{j});
                 },
-                .MakeArraySpread => {
+                .EmptyTuple => {
+                    std.debug.print("{} EmptyTuple\n", .{j});
+                },
+                .MakeTuple => {
+                    const count = self.read_u8(&i);
+                    std.debug.print("{} MakeTuple {d}\n", .{j, count});
+                },
+                .MakeTupleSpread => {
                     const count = self.read_u8(&i);
                     const spread_bitfield = self.read_u256(&i);
-                    std.debug.print("{} MakeArraySpread {d} {d}\n", .{j, count, spread_bitfield});
+                    std.debug.print("{} MakeTupleSpread {d} {d}\n", .{j, count, spread_bitfield});
                 },
                 .Index => {
                     std.debug.print("{} Index\n", .{j});
@@ -928,9 +938,10 @@ const Op = enum(u8) {
     PopCallFrame,
     // next instr is fields
     MakeObj,
-    EmptyArray,
+    EmptyTuple,
     MakeArray,
-    MakeArraySpread,
+    MakeTuple,
+    MakeTupleSpread,
     MakeUnion,
 
     Index,
@@ -1113,8 +1124,14 @@ const String = struct {
 const Array = struct {
     ptr: ?[*]const Value align(8),
     len: u32,
+    flags: Flags,
 
-    pub fn new(alloc: Allocator, values: []const Value, spread: []const Value) !Array {
+    const Flags = packed struct {
+        is_tuple: bool = false,
+        pad: u31 = 0,
+    };
+
+    pub fn new(alloc: Allocator, is_tuple: bool, values: []const Value, spread: []const Value) !Array {
         var ptr = try alloc.alloc(Value, values.len + spread.len);
 
         if (values.len > 0) @memcpy(ptr[0..values.len], values);
@@ -1123,7 +1140,14 @@ const Array = struct {
         return .{
             .ptr = @ptrCast(ptr),
             .len = @intCast(values.len + spread.len),
+            .flags = Flags{
+                .is_tuple = is_tuple,
+            },
         };
+    }
+
+    pub fn is_tuple_array(self: *const Array) bool {
+        return self.flags.is_tuple;
     }
 
     pub fn item_at_index(self: *const Array, idx: u32) Value {
@@ -1138,10 +1162,13 @@ const Array = struct {
         return &[_]Value{};
     }
 
-    pub fn empty() Array {
+    pub fn empty_tuple() Array {
         return .{
             .ptr = null,
             .len = 0,
+            .flags = Flags{
+                .is_tuple = true,
+            },
         };
     }
 };
