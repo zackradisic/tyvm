@@ -4,7 +4,7 @@ use std::mem::size_of;
 use std::num::NonZeroUsize;
 
 use crate::common::AllocBox as Box;
-use crate::ir::{Expr, GlobalDecl, TupleItem, Unary};
+use crate::ir::{Expr, GlobalDecl, ObjectLit, TupleItem, Unary};
 use crate::op::Op;
 use crate::{common::*, ir};
 
@@ -152,26 +152,8 @@ impl<'alloc> Compiler<'alloc> {
         self.interned_strings.get(string).cloned()
     }
 
-    fn alloc_constant_object(&mut self, string: &'alloc str) -> ConstantTableIdx {
-        if let Some(idx) = self.interned_strings.get(string) {
-            return *idx;
-        }
-
-        let u32_size = size_of::<u32>();
-        // `u32_size * 2` because we need the bytes to be aligned to 8
-        // let size = (u32_size * 2) + string.as_bytes().len();
-        let size = u32_size + string.as_bytes().len();
-
-        let (idx, buf) =
-            self.alloc_constant_with_len(ConstantKind::String, size.try_into().unwrap());
-
-        let len = string.len() as u32;
-        buf[0..u32_size].copy_from_slice(&len.to_le_bytes());
-        buf[u32_size..].copy_from_slice(string.as_bytes());
-
-        self.interned_strings.insert(string, idx);
-
-        idx
+    fn alloc_constant_object(&mut self, string: &ObjectLit<'alloc>) -> ConstantTableIdx {
+        todo!()
     }
 
     /// Allocates the given string in the constant pool. If the string already exists,
@@ -462,10 +444,10 @@ impl<'alloc> Compiler<'alloc> {
             }
             Expr::Index(index) => {
                 self.compile_expr(index.object_ty);
-                match index.object_ty.as_num_lit() {
-                    Some(num_lit) => {
-                        let constant_idx = self.compile_num_lit(num_lit);
-                        self.push_op_with_constant(Op::IndexNumLit, constant_idx);
+                match index.index_ty.as_literal() {
+                    Some(lit) => {
+                        let constant_idx = self.alloc_lit(&lit);
+                        self.push_op_with_constant(Op::IndexLit, constant_idx);
                     }
                     None => {
                         self.compile_expr(index.index_ty);
@@ -478,9 +460,9 @@ impl<'alloc> Compiler<'alloc> {
                     expr: array.the_type,
                     spread: false,
                 }],
-                expr.is_lit(),
+                expr.is_comptime_known(),
             ),
-            Expr::Tuple(tup) => self.compile_array(tup.types.as_slice(), expr.is_lit()),
+            Expr::Tuple(tup) => self.compile_array(tup.types.as_slice(), expr.is_comptime_known()),
             ir::Expr::Intersect(intersect) => {
                 // If all arguments are object literals we can compile this to one big MakeObj op
                 // if intersect
@@ -513,24 +495,24 @@ impl<'alloc> Compiler<'alloc> {
                 }
                 self.push_bytes(Op::Intersect as u8, intersect.types.len() as u8);
             }
-            // TODO: fast path for object lit
+            // TODO: constants for objectlit
             ir::Expr::ObjectLit(obj_lit) => {
-                todo!();
-                // self.compile_make_obj(
-                //     obj_lit.fields.len() as u8,
-                //     obj_lit.fields.iter().map(|(k, &v)| (k.name(), v)),
-                // );
+                for (k, v) in obj_lit.fields.iter() {
+                    let field_constant_idx = self.alloc_constant_string(k.name());
+                    self.push_op_with_constant(Op::Constant, field_constant_idx);
+                    self.compile_expr(v);
+                }
+                let count: u8 = obj_lit.fields.len().try_into().unwrap();
+                self.push_bytes(Op::MakeObj as u8, count as u8);
             }
             ir::Expr::Object(obj) => {
-                todo!()
-                // for (k, v) in obj.fields.iter() {
-                //     self.push_constant(Value::from_obj_ref(ObjRef::alloc_new_str_ref(
-                //         StringRef::new(k.name()),
-                //     )));
-                //     self.compile_expr(v);
-                // }
-                // let count = obj.fields.len();
-                // self.push_bytes(Op::MakeObj as u8, count as u8);
+                for (k, v) in obj.fields.iter() {
+                    let field_constant_idx = self.alloc_constant_string(k.name());
+                    self.push_op_with_constant(Op::Constant, field_constant_idx);
+                    self.compile_expr(v);
+                }
+                let count: u8 = obj.fields.len().try_into().unwrap();
+                self.push_bytes(Op::MakeObj as u8, count as u8);
             }
             ir::Expr::Number => {
                 self.push_op(Op::Number);
@@ -646,6 +628,15 @@ impl<'alloc> Compiler<'alloc> {
                     }
                 }
             }
+        }
+    }
+
+    fn alloc_lit(&mut self, lit: &ir::LiteralExpr<'alloc>) -> ConstantTableIdx {
+        match lit {
+            ir::LiteralExpr::String(str) => self.alloc_constant_string(str.value.as_str()),
+            ir::LiteralExpr::Boolean(boolean) => self.alloc_constant_bool(boolean.value),
+            ir::LiteralExpr::Number(num) => self.alloc_constant_num(num.value),
+            ir::LiteralExpr::Object(obj) => self.alloc_constant_object(obj),
         }
     }
 

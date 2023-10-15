@@ -1,6 +1,7 @@
 #+title: Todo
 
-* TODO fucking important [2/10]
+* TODO fucking important [1/14]
+** TODO Need distinction between Tuple vs. Array
 ** TODO Unions [1/3]
 in terms of representation, we just need =Vec<Value>= for now. later we can do specialization for common like =T | undefined=
 
@@ -188,6 +189,38 @@ can speed up index operations if we make specialization ops for indexing
 for example =myarray[0]= is a common expression, specifically indexing with a number constant literal
 ** TODO Accessing =length= key on arrays
 ** TODO GC
+** TODO Cache function extends checks
+Functions have extends checks and the RHS of the extends check can be cached.
+
+For example:
+
+#+begin_src typescript
+type Bar<X extends { hi: string }> = /* ... */;
+#+end_src
+** TODO Object/array constants
+
+Idea here is that object/array constants will also contain a pointer which represents a cache. At compile time, these will be set to NULL. At runtime, we instantiate all constants and set the pointer.
+
+The idea here is that this serves as a "cache" so we don't have to re-instantiate object/arrays that are known at compile time.
+** TODO Indexing default properties
+All types have some common default properties, and then properties of their own.
+
+Indexing needs to work on these.
+
+Number:
+- =.toString()=
+- =.valueOf()=
+- =.toExponential()=
+- =.toFixed()=
+- =.toLocaleString()=
+- =.toPrecision()=
+
+Boolean:
+- =.valueOf()=
+
+String:
+- a bunch of shit
+** TODO Indexing numeric strings
 * TODO brainstorming
 ** TODO use immutable / persistent data structures
 all values in type-level typescript are immutable. langs with focus on immutability tend to be allocation heavy (you need to make more objects)

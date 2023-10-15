@@ -27,3 +27,9 @@ type t5 = ExtendsCheck<
 >;
 
 type t6 = [1, 2, 3, 4]["length"];
+
+type t7 = ExtendsCheck<number, object>;
+
+type t8 = ExtendsCheck<{}, {}>;
+
+// type t9 = ExtendsCheck<null, undefined>;

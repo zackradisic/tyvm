@@ -17,7 +17,7 @@ call_frames: [1024]CallFrame = [_]CallFrame{CallFrame.uninit()} ** 1024,
 call_frames_count: usize = 0,
 
 globals: HashMap(ConstantTableIdx, Value),
-interned_strings: std.StringArrayHashMap(ConstantTableIdx),
+interned_strings: std.StringArrayHashMap(String),
 
 /// Constant data loaded from the bytecode
 functions: HashMap(ConstantTableIdx, Function),
@@ -27,7 +27,7 @@ constant_pool: []const u8 align(8),
 pub fn init(alloc: Allocator, bytecode: []const u8) !VM {
     var vm: VM = .{
         .globals = HashMap(ConstantTableIdx, Value).init(alloc),
-        .interned_strings = std.StringArrayHashMap(ConstantTableIdx).init(alloc),
+        .interned_strings = std.StringArrayHashMap(String).init(alloc),
         .functions = HashMap(ConstantTableIdx, Function).init(alloc),
         .constant_table = undefined,
         .constant_pool = undefined,
@@ -72,9 +72,10 @@ fn load_bytecode(self: *VM, bytecode: []const u8) !void {
     self.constant_table = constant_table;
 
     for (self.constant_table, 0..) |entry, i| {
+        _ = i;
         if (entry.kind == .String) {
-            const str_slice = self.read_constant_string(entry.idx).as_str();
-            try self.interned_strings.put(str_slice, ConstantTableIdx.new(@intCast(i)));
+            const str = self.read_constant_string(entry.idx);
+            try self.interned_strings.put(str.as_str(), str);
         }
     }
 }
@@ -242,16 +243,68 @@ pub fn run(self: *VM) !void {
             .Negate => {
                 self.push(self.pop().negate());
             },
+            .MakeObj => {
+                const count = frame.read_byte();
+                const fields_base: [*]Value = self.stack_top - count * 2;
+                const fields = fields_base[0..count*2];
+
+                const obj = try Object.new(std.heap.c_allocator, fields);
+                self.pop_n(count * 2);
+                self.push(Value.object(obj));
+            },
+            .Index => {
+                const index = self.pop();
+                const object = self.pop();
+                const ret = self.index_value(object, index);
+                self.push(ret);
+            },
+            .IndexLit => {
+                const constant_idx = frame.read_constant_idx();
+                const constant = self.read_constant(constant_idx);
+                const object = self.pop();
+                const ret = self.index_value(object, constant);
+                self.push(ret);
+            },
             .Exit => return,
             else => { 
+                print("Unhandled op name: {s}\n", .{@tagName(op)});
                 @panic("Unhandled op.");
             }
         }
     }
 }
 
+fn index_value(self: *VM, object: Value, index: Value) Value {
+    _ = self;
+    switch (object) {
+        .Object => |obj| {
+            const field = obj.get_field(index.String) orelse return .Any;
+            return field.value;
+        },
+        .Array => |arr| {
+            if (@as(ValueKind, index) == ValueKind.Number) { 
+                if (std.math.floor(index.Number) != index.Number) return .Undefined;
+                return arr.item_at_index(@intFromFloat(index.Number));
+            }
+            // TODO: 
+            unreachable;
+        },
+        .String => |str| {
+            _ = str;
+            if (@as(ValueKind, index) == ValueKind.Number) return .StringKeyword;
+            // TODO: 
+            unreachable;
+        },
+        else => return .Any,
+    }
+}
+
+/// Typescript's "extends" is a terrible name, but kept here for consistency's sake.
+/// A better term is "subtype". First think of types as sets. For example, `string` is a set of every possible string type: "foo", "bar", "sldsad", and so on
+/// When we say `A subtypes B`, we are actually saying `A is a subset of B`. For example: "foo" subtypes `string`.
 fn extends(self: *VM, a: Value, b: Value) bool {
     if (b == .Any or a == .Any) return true;
+    if (b == .Undefined) return a == .Undefined;
     if (b == .NumberKeyword) return @as(ValueKind, a) == ValueKind.Number or @as(ValueKind, a) == ValueKind.NumberKeyword;
     if (b == .BoolKeyword) return @as(ValueKind, a) == ValueKind.Bool or @as(ValueKind, a) == ValueKind.BoolKeyword;
     if (b == .StringKeyword) return @as(ValueKind, a) == ValueKind.String or @as(ValueKind, a) == ValueKind.StringKeyword;
@@ -266,8 +319,26 @@ fn extends(self: *VM, a: Value, b: Value) bool {
     if (@as(ValueKind, b) == .String) return @as(ValueKind, a) == .String and a.String.ptr == b.String.ptr;
 
     if (@as(ValueKind, b) == .Array) return @as(ValueKind, a) == .Array and self.extends_array(a.Array, b.Array);
+    if (@as(ValueKind, b) == .Object) return @as(ValueKind, a) == .Object and self.extends_object(a.Object, b.Object); 
 
     return false;
+}
+
+fn extends_object(self: *VM, a: Object, b: Object) bool {
+   // Everything extends the empty object: `{}`
+   if (b.len == 0) return true;
+   // If `a` has less keys than `b` then it cannot possibly subtype `b` 
+   if (a.len < b.len) return false;
+
+    // Now we know `a` either has the same keys as `b` or more:
+    // 1. Check that each key in `b` exists in `a`
+    // 2. Check that the value in `a[key]` subtypes the value in `b[key]`
+    for (b.fields_slice()) |*bfield| {
+        const afield = a.get_field(bfield.name) orelse return false;
+        if (!self.extends(afield.value, bfield.value)) return false;
+    }
+
+    return true;
 }
 
 fn extends_array(self: *VM, a: Array, b: Array) bool {
@@ -741,8 +812,7 @@ const Function = struct {
                     std.debug.print("{} POP CALL FRAME\n", .{j});
                 },
                 .MakeObj => {
-                    const count = self.code[i];
-                    i += 1;
+                    const count = self.read_u8(&i);
                     std.debug.print("{} Make obj {?}\n", .{j, count});
                 },
                 .EmptyArray => {
@@ -760,10 +830,9 @@ const Function = struct {
                 .Index => {
                     std.debug.print("{} Index\n", .{j});
                 },
-                .IndexNumLit => {
-                    const count = self.code[i];
-                    i += 1;
-                    std.debug.print("{} IndexNumLit {?}\n", .{j, count});
+                .IndexLit => {
+                    const constant = self.read_constant_table_idx(&i);
+                    std.debug.print("{} IndexLit {?}\n", .{j, constant});
                 },
                 .FormatString => {
                     const count = self.code[i];
@@ -858,7 +927,7 @@ const Op = enum(u8) {
     MakeUnion,
 
     Index,
-    IndexNumLit,
+    IndexLit,
 
     WriteFile,
     ToTypescriptSource,
@@ -880,6 +949,7 @@ const Op = enum(u8) {
 
 const ValueKind = enum {
     Any,
+    Undefined,
     NumberKeyword,
     BoolKeyword,
     StringKeyword,
@@ -888,10 +958,12 @@ const ValueKind = enum {
     Bool,
     String,
     Array,
+    Object,
 };
 
 const Value = union(ValueKind){
     Any,
+    Undefined,
     NumberKeyword,
     BoolKeyword,
     StringKeyword,
@@ -900,12 +972,19 @@ const Value = union(ValueKind){
     Bool: bool,
     String: String,
     Array: Array,
+    Object: Object,
 
     fn negate(self: Value) Value {
         switch (self) {
             .Number => |v| return Value.number(-v),
             else => @panic("Invalid negation"),
         }
+    }
+
+    fn object(value: Object) Value {
+        return .{
+            .Object = value,
+        };
     }
 
     fn array(value: Array) Value {
@@ -934,9 +1013,23 @@ const Value = union(ValueKind){
 
     fn encode_as_string(self: Value, alloc: Allocator, buf: *std.ArrayListUnmanaged(u8)) !void {
         switch (self) {
-            .Any, .NumberKeyword, .BoolKeyword, .StringKeyword => @panic("Unhandled"),
+            .Any => {
+                try write_str_expand(alloc, buf, "any", .{});
+            },
+            .Undefined => {
+                try write_str_expand(alloc, buf, "undefined", .{});
+            },
+            .NumberKeyword => {
+                try write_str_expand(alloc, buf, "number", .{});
+            }, 
+            .BoolKeyword => {
+                try write_str_expand(alloc, buf, "bool", .{});
+            }, 
+            .StringKeyword => {
+                try write_str_expand(alloc, buf, "string", .{});
+            },
             .String => |v|{
-                try write_str_expand(alloc, buf, "{s}", .{v.as_str()});
+                try write_str_expand(alloc, buf, "\"{s}\"", .{v.as_str()});
             },
             .Bool => |v| {
                 if (v) {
@@ -948,6 +1041,21 @@ const Value = union(ValueKind){
             .Number => |v| {
                 try write_str_expand(alloc, buf, "{d}", .{v});
             },
+            .Object => |v| {
+                try write_str_expand(alloc, buf, "{{", .{});
+                if (v.fields) |fields| {
+                    const last = v.len -| 1;
+                    for (fields[0..v.len], 0..) |field_, i| {
+                        const field: Object.Field = field_;
+                        try write_str_expand(alloc, buf, "    k", .{});
+                        try Value.string(field.name).encode_as_string(alloc, buf);
+                        try write_str_expand(alloc, buf, ": ", .{});
+                        try field.value.encode_as_string(alloc, buf);
+                        if (i != last) try write_str_expand(alloc, buf, ",\n", .{});
+                    }
+                }
+                try write_str_expand(alloc, buf, "}}\n", .{});
+            },
             .Array => |v| {
                 try write_str_expand(alloc, buf, "[", .{});
                 if (v.ptr) |ptr| {
@@ -955,7 +1063,7 @@ const Value = union(ValueKind){
                     for (ptr[0..v.len], 0..) |val, i| {
                         try val.encode_as_string(alloc, buf);
                         if (i != last) try write_str_expand(alloc, buf, ", ", .{});
-                }
+                    }
                 }
                 try write_str_expand(alloc, buf, "]\n", .{});
             }
@@ -971,6 +1079,8 @@ fn write_str_expand(alloc: Allocator, buf: *std.ArrayListUnmanaged(u8), comptime
     buf.items.len += len;
 }
 
+/// INVARIANTS:
+/// - Strings are always interned, so two strings are equal if their pointer's are equal
 const String = struct {
     ptr: [*]const u8,
     len: u32 align(8),
@@ -992,6 +1102,12 @@ const String = struct {
             .ptr = @ptrCast(slice.ptr),
         };
     }
+
+    pub fn cmp(a: *const String, b: *const String) Order {
+        if (@as(usize, @intFromPtr(a.ptr)) < @as(usize, @intFromPtr(b.ptr))) return .Less;
+        if (@as(usize, @intFromPtr(a.ptr)) > @as(usize, @intFromPtr(b.ptr))) return .Greater;
+        return .Equal;
+    }
 };
 
 const Array = struct {
@@ -1010,6 +1126,11 @@ const Array = struct {
         };
     }
 
+    pub fn item_at_index(self: *const Array, idx: u32) Value {
+        if (idx >= self.len) return .Undefined;
+        return self.ptr.?[idx];
+    }
+
     pub fn items(self: *const Array) []const Value {
         if (self.ptr) |ptr| {
             return ptr[0..self.len];
@@ -1025,14 +1146,92 @@ const Array = struct {
     }
 };
 
-const Object = extern struct { 
-    fields: [*]Field,
-    len: u32 align(8),
+/// INVARIANTS:
+/// - `fields` are ordered lexographically by key
+const Object = struct { 
+    fields: ?[*]const Field,
+    len: u32,
 
-    const Field = extern struct {
+    const Field = struct {
+        name: String,
+        value: Value,
 
+        pub fn cmp_key(a: *const Field, b: *const Field) Order {
+            return String.cmp(&a.name, &b.name);
+        }
+        
+        pub fn less_than_key(_: void, a: Field, b: Field) bool {
+            return Field.cmp_key(&a, &b) == .Less;
+        }
     };
+
+    pub fn new(alloc: Allocator, fields: []const Value) !Object {
+        std.debug.assert(fields.len % 2 == 0);
+
+        var object_fields = try alloc.alloc(Field, fields.len / 2);
+
+        var i: usize = 0;
+        for (object_fields) |*f| {
+            f.name = fields[i].String;
+            f.value = fields[i + 1];
+            i += 2;
+        }
+
+        std.sort.block(Object.Field, object_fields, {}, Field.less_than_key);
+
+        var object: Object = .{
+            .fields = object_fields.ptr,
+            .len = @intCast(fields.len / 2)
+        };
+
+        return object;
+    }
+
+    pub inline fn fields_slice(self: *const Object) []const Field {
+        return if (self.fields) |fs| fs[0..self.len] else &[_]Field{};
+    }
+
+    pub fn get_field(self: *const Object, name: String) ?*const Field {
+        const dummy_field = .{
+            .name = name,
+            .value = Value.number(0),
+        };
+        if (self.fields) |fields| {
+            const idx = binary_search(Object.Field, fields[0..self.len], &dummy_field, Object.Field.cmp_key) orelse return null;
+            return &fields[idx];
+        }
+        return null;
+    }
 };
+
+pub const Order = enum {
+    Less,
+    Equal,
+    Greater,
+};
+
+pub fn binary_search(comptime T: type, arr: []const T, search_elem: *const T, comptime cmp: fn(*const T, *const T) Order) ?usize {
+    var size: usize = arr.len;
+    var left: usize = 0;
+    var right: usize = size;
+
+    while (left < right) {
+        const mid = left + size / 2;
+        const item: *const T = &arr[mid];
+        switch (cmp(search_elem, item)) {
+            .Equal => return mid,
+            .Less => {
+                right = mid;
+            },
+            .Greater => {
+                left = mid + 1;
+            },
+        }
+        size = right - left;
+    }
+
+    return null;
+}
 
 test "count spread" {
     std.debug.print("HIHIIJKJLKJFD\n", .{});

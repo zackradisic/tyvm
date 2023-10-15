@@ -23,6 +23,13 @@ pub enum Statement<'ir> {
     Expr(Expr<'ir>),
 }
 
+pub enum LiteralExpr<'ir> {
+    String(&'ir StringLiteral),
+    Boolean(&'ir BooleanLiteral),
+    Number(&'ir NumberLiteral<'ir>),
+    Object(&'ir ObjectLit<'ir>),
+}
+
 /// TODO: compact repr (box them bad boys son)
 #[derive(Debug)]
 pub enum Expr<'ir> {
@@ -56,8 +63,18 @@ impl<'ir> Expr<'ir> {
         }
     }
 
+    pub fn as_literal(&self) -> Option<LiteralExpr<'ir>> {
+        match self {
+            Expr::StringLiteral(a) => Some(LiteralExpr::String(a)),
+            Expr::BooleanLiteral(a) => Some(LiteralExpr::Boolean(a)),
+            Expr::NumberLiteral(a) => Some(LiteralExpr::Number(a)),
+            Expr::ObjectLit(a) => Some(LiteralExpr::Object(a)),
+            _ => None,
+        }
+    }
+
     /// This function returns true if the expression can be computed at compile time
-    pub fn is_lit(&self) -> bool {
+    pub fn is_comptime_known(&self) -> bool {
         match self {
             Expr::Any => true,
             Expr::Identifier(_) => false,
@@ -72,13 +89,13 @@ impl<'ir> Expr<'ir> {
             Expr::ObjectLit(lit) => true,
             Expr::Call(_) => false,
             Expr::If(_) => false,
-            Expr::Array(arr) => arr.the_type.is_lit(),
-            Expr::Tuple(tup) => tup.types.iter().all(|e| e.expr.is_lit()),
+            Expr::Array(arr) => arr.the_type.is_comptime_known(),
+            Expr::Tuple(tup) => tup.types.iter().all(|e| e.expr.is_comptime_known()),
             Expr::Index(_) => false,
             Expr::Let(_) => false,
             Expr::Union(_) => false,
             Expr::FormattedString(_) => false,
-            Expr::Unary(unary) => unary.expr.is_lit(),
+            Expr::Unary(unary) => unary.expr.is_comptime_known(),
         }
     }
 }
@@ -95,7 +112,7 @@ pub struct Object<'ir> {
 
 impl<'ir> Object<'ir> {
     pub fn can_be_object_lit(&self) -> bool {
-        self.fields.values().all(|e| e.is_lit())
+        self.fields.values().all(|e| e.is_comptime_known())
     }
     pub fn try_into_object_lit(&self, arena: &'ir Arena) -> Option<ObjectLit<'ir>> {
         if self.can_be_object_lit() {

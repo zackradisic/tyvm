@@ -36,7 +36,7 @@ pub enum Op {
     MakeUnion,
 
     Index,
-    IndexNumLit,
+    IndexLit,
 
     WriteFile,
     ToTypescriptSource,
