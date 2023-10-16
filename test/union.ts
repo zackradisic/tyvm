@@ -5,7 +5,7 @@ type Extends<A, B> = A extends B ? "extends" : "not extends";
 export type Main<Args extends string[]> = AssertEq<
   Print<
     Extends<
-      { bar: number },
+      { bar: string },
       { foo: string } | { bar: string } | { baz: number }
     >
   >,

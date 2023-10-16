@@ -1,10 +1,10 @@
 #+title: Todo
 
-* TODO fucking important [2/14]
+* TODO fucking important [0/12]
 ** TODO Unions [1/3]
 in terms of representation, we just need =Vec<Value>= for now. later we can do specialization for common like =T | undefined=
 
-*** TODO Normalizing unions
+*** DONE Normalizing unions
 
 Typically Typescript "normalizes" unions:
 #+begin_src typescript
@@ -53,7 +53,7 @@ type e = { foo: string, bar: number } | { foo: string, bar: number }
 Which is very confusing because the objects are actually identical.
 
 This is actually part of the "Object edge case" explained in the next section.
-*** TODO Object edge case
+*** Object edge case
 this is a weird edge case:
 #+begin_src typescript
 type Extends<A, B> = A extends B ? "extends" : "not extends";
@@ -119,7 +119,7 @@ The key insight to understanding this behaviour is to recognize that it /only/ w
 
 A discriminated union is a union of N objects who share a *single* similar key, whose value is a *literal*.
 
-Those two subtle conditions are important:
+Those three subtle conditions are important:
 1. there must be one similar key, the discriminant key
 2. the discriminat key's value must be a literal type
 
@@ -197,7 +197,7 @@ type b = { foo: 1, a: string } | { foo: 2, b: number } | { foo: 3, b: number };
 type result1 = Extends<a, b>
 #+end_src
 
-*** TODO Disjoint edge case
+*** Disjoint edge case
 if two unions are disjoint:
 #+begin_src typescript
 type ExtendsCheck<A, B> = A extends B ? "yes" : "no";
@@ -208,8 +208,108 @@ type t5 = ExtendsCheck<
 #+end_src
 
 the result is: "yes" | "no"
+*** TODO Unions of objects [0/0]
+Unions of objects have some slight alterations when it comes to normalizing/flattening them.
 
-** TODO Non-object type keys
+Well, first normalization usually works as you expect.
+#+begin_src typescript
+type discriminatedUnionWithNormalUnion =
+  | { foo: "lol"; hi: number }
+  | { foo: "bar" }
+  | { foo: string };
+
+// normalization works as expected, they all get flattened to `{ foo: string }`
+function someFunc(x: discriminatedUnionWithNormalUnion) {
+  if (x.foo === "lol") {
+    // @ts-expect-error
+    x.hi;
+  }
+}
+#+end_src
+
+However, one discrepancy is that disjoint objects get normalized into an object with no keys at all:
+#+begin_src typescript
+type discriminatedUnionWithNormalUnion2 =
+  | { foo: "lol" }
+  | { foo: "bar" }
+  | { hi: string };
+
+// `x` has no keys
+function someFunc(x: discriminatedUnionWithNormalUnion2) {
+  // this is `never`
+  type lmao = keyof typeof x;
+}
+#+end_src
+
+When objects form a union with non-object types, they are considered disjoint, even though non-object types have properties themselves:
+#+begin_src typescript
+type discriminatedUnionWithNormalUnion3 =
+  | { foo: "lol"; charAt(pos: number): string }
+  | { foo: "bar"; charAt(pos: number): string }
+  | string;
+
+// `x` has no keys
+function someFunc3(x: discriminatedUnionWithNormalUnion2) {
+  // this is `never`
+  type lmao = keyof typeof x;
+}
+#+end_src
+
+All three variants have the =charAt(pos: number): string= function property.
+
+*** TODO Discriminated unions [0/2]
+
+We need to distinguish unions from discriminated unions because subtyping logic is different for discriminated unions. (See "Object edge case" and "Disjoint edge case" above).
+
+First we need to know what precisely is a discriminated union:
+
+A discriminated union, is a union of N object types that all contain a discriminant key/value pair. This discriminant key/value pair has three subtle but important conditions:
+1. the /discriminant key/ must be present in all variants of the union
+2. the /value/ of the discriminant must be a literal in all variants
+3. there can only be /one/ discriminant key/value pair, presence of multiple means the union no longer qualifies as a discriminated union
+
+All three of these conditions must be met.
+
+Now we know what a discriminated union is. How does detecting one look like in code?
+
+1. Build the union regularly, normalizing it
+2. Check that the union contains a discriminant key/value pair satisfying the three conditions outlined above.
+
+Once we know that the union is discriminanted, we can store some helpful properties to make operations faster. One notable would be storing the discriminated key.
+
+Additionally, discriminated unions have deviant behaviour in subtyping logic.
+
+Specifically, the algorithm for subtyping discriminated unions changes when you construct an object which has the discrimiant key, with a value that is the union of the possible values of the discriminant key.
+
+Bad explanation. Look at this example:
+
+#+begin_src typescript
+type Extends<A, B> = A extends B ? "extends" : "not extends";
+
+type a = { foo: 1 | 2 };
+type b = { foo: 1 } | { foo: 2 };
+
+// The result is: "extends"
+type result = Extends<a, b>;
+#+end_src
+
+If we use the /normal/ union subtyping algorithm. We would do:
+
+1. Check that =a= subtypes /any/ variant of =b=
+2. Check that ={ foo: 1 | 2 }= subtypes ={ foo: 1 }=
+3. It doesn't, because =1 | 2= does not subtype =1=. Try next variant.
+4. Check that ={ foo: 1 | 2 }= subtypes ={ foo: 2 }=
+5. It doesn't, because =1 | 2= does not subtype =2=.
+
+Under the algorithm, =a= does not subtype =b=. But intuitively, it feels like ={ foo: 1 | 2 }= should be equivalent to ={ foo: 1 } | { foo: 2 }=.
+
+So we want this behaviour. How do we make it work?
+
+The key insight is that the =|= operator /distributes over the discriminant key of a discriminated union/.
+**** TODO Detect discriminated unions and store their tag
+**** TODO Implement specialized discriminated union subtype logic
+
+** TODO Keys on non-object types
 all types are actually objects and have additional keys
 
 for example =number= has =toExponential=, =toFixed=, etc.
@@ -379,6 +479,7 @@ Boolean:
 String:
 - a bunch of shit
 ** TODO Indexing numeric strings
+e.g. =foo[0]= -> =foo['0']=
 * TODO brainstorming
 ** TODO use immutable / persistent data structures
 all values in type-level typescript are immutable. langs with focus on immutability tend to be allocation heavy (you need to make more objects)

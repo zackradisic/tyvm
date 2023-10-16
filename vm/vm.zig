@@ -213,7 +213,6 @@ pub fn run(self: *VM) !void {
             .SetGlobal => {
                 const constant_idx = frame.read_constant_idx();
                 const value = self.pop();
-                try value.debug(std.heap.c_allocator);
                 try self.globals.put(constant_idx, value);
             },
             .Jump => {
@@ -294,7 +293,9 @@ pub fn run(self: *VM) !void {
                 const args_base = self.stack_top - count;
                 const args = args_base[0..count];
                 const union_val = try self.make_union(std.heap.c_allocator, args);
-                self.push(Value.make_union(union_val));
+                var union_ptr = try std.heap.c_allocator.create(Union);
+                union_ptr.* = union_val;
+                self.push(Value.make_union(union_ptr));
             },
             .Exit => return,
             else => { 
@@ -439,7 +440,6 @@ fn update_object(self: *VM, alloc: Allocator, base: Object, additional: Object) 
 fn make_union(self: *VM, alloc: Allocator, variants: []const Value) !Union {
     var variants_list = try std.ArrayListUnmanaged(Value).initCapacity(alloc, variants.len);
 
-    var actual_len: u32 = 0;
     for (variants) |variant| {
         if (@as(ValueKind, variant) == .Union) {
             for (variant.Union.variants_slice()) |nested_variant| {
@@ -450,13 +450,13 @@ fn make_union(self: *VM, alloc: Allocator, variants: []const Value) !Union {
         try self.make_union_impl(alloc, variant, &variants_list);
     }
 
-    if (actual_len != variants.len) {
+    if (variants_list.items.len != variants.len) {
         variants_list.shrinkAndFree(alloc, variants_list.items.len);
     }
 
     return .{
         .variants = variants_list.items.ptr,
-        .len = @intCast(actual_len),
+        .len = @intCast(variants_list.items.len),
     };
 }
 
@@ -1107,7 +1107,7 @@ const Value = union(ValueKind){
     String: String,
     Array: Array,
     Object: Object,
-    Union: Union,
+    Union: *Union,
 
     fn negate(self: Value) Value {
         switch (self) {
@@ -1116,7 +1116,7 @@ const Value = union(ValueKind){
         }
     }
 
-    fn make_union(value: Union) Value {
+    fn make_union(value: *Union) Value {
         return .{
             .Union = value,
         };
@@ -1146,10 +1146,10 @@ const Value = union(ValueKind){
         return .{ .String = value };
     }
 
-    fn debug(self: Value, alloc: Allocator) !void {
+    fn debug(self: Value, alloc: Allocator, comptime str: []const u8) !void {
         var buf = std.ArrayListUnmanaged(u8){};
         try self.encode_as_string(alloc, &buf, true);
-        print("VALUE: {s}\n", .{buf.items.ptr[0..buf.items.len]});
+        print("{s}: {s}\n", .{str, buf.items.ptr[0..buf.items.len]});
     }
 
     fn encode_as_string(self: Value, alloc: Allocator, buf: *std.ArrayListUnmanaged(u8), format: bool) !void {

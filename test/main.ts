@@ -213,3 +213,48 @@ type result8 = Extends<
 type nicenice = { foo: "lol"; bar: "hehe" } | { foo: "wow"; bar: "nice" };
 type result9 = Extends<{ foo: "lol" | "wow"; bar: "hehe" | "nice" }, nicenice>;
 type result10 = Extends<{ foo: "lol" | "wow"; bar: "hehe" | "nice" }, nicenice>;
+
+type discriminatlsdkjflksd = { foo: Array<"hi"> } | { foo: Array<string> };
+
+type discriminatedUnionEdgeCase =
+  | { foo: "lol"; hi: number }
+  | { foo: "bar" }
+  | { foo: string };
+
+// normalization works as expected, they all get flattened to `{ foo: string }`
+function someFunc(x: discriminatedUnionEdgeCase) {
+  if (x.foo === "lol") {
+    // @ts-expect-error
+    x.hi;
+  }
+}
+
+type discriminatedUnionEdgeCase2 =
+  | { foo: "lol" }
+  | { foo: "bar" }
+  | { hi: string };
+
+// `x` has no keys
+function someFunc2(x: discriminatedUnionEdgeCase2) {
+  // this is `never
+  type lmao = keyof typeof x;
+}
+
+type discriminatedUnionEdgeCase3 =
+  | { foo: "lol"; charAt(pos: number): string }
+  | { foo: "bar"; charAt(pos: number): string }
+  | string;
+
+// `x` has no keys
+function someFunc3(x: discriminatedUnionEdgeCase2) {
+  // this is `never`
+  type lmao = keyof typeof x;
+}
+
+type discriminatedUnionEdgeCase4 =
+  | { foo: "lol"; hello: string }
+  | { foo: "lol"; hello: number }
+  // ^ The above two get normalized as expected
+  | { foo: "bar" };
+
+function someFunc4(x: discriminatedUnionEdgeCase4) {}
