@@ -403,6 +403,7 @@ impl<'alloc> Compiler<'alloc> {
             }
             Expr::Union(union) => {
                 let len: u8 = union.variants.len().try_into().unwrap();
+                assert!(len >= 2);
                 union.variants.iter().for_each(|v| self.compile_expr(v));
                 self.push_bytes(Op::Union as u8, len);
             }

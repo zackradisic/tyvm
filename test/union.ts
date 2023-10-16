@@ -1,3 +1,13 @@
 import { Print, Add, Sub, Lte, Eq, Panic, AssertEq } from "./std";
 
-export type Main<Args extends string[]> = Args;
+type Extends<A, B> = A extends B ? "extends" : "not extends";
+
+export type Main<Args extends string[]> = AssertEq<
+  Print<
+    Extends<
+      { bar: number },
+      { foo: string } | { bar: string } | { baz: number }
+    >
+  >,
+  "extends"
+>;

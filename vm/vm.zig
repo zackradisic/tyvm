@@ -248,7 +248,7 @@ pub fn run(self: *VM) !void {
                 }
                 str_array.shrinkAndFree(std.heap.c_allocator, str_array.items.len);
                 self.pop_n(args_count);
-                self.push(Value.string(self.new_string_from_slice(str_array.items)));
+                self.push(Value.string(self.make_string_from_slice(str_array.items)));
             },
             .Negate => {
                 self.push(self.pop().negate());
@@ -289,6 +289,13 @@ pub fn run(self: *VM) !void {
                 const a = self.pop();
                 if (!self.eq(a, b)) @panic("Not equal");
             },
+            .Union => {
+                const count = frame.read_u8();
+                const args_base = self.stack_top - count;
+                const args = args_base[0..count];
+                const union_val = try self.make_union(std.heap.c_allocator, args);
+                self.push(Value.make_union(union_val));
+            },
             .Exit => return,
             else => { 
                 print("Unhandled op name: {s}\n", .{@tagName(op)});
@@ -326,6 +333,9 @@ fn extends(self: *VM, a: Value, b: Value) bool {
     if (@as(ValueKind, b) == .Array) return @as(ValueKind, a) == .Array and self.extends_array(a.Array, b.Array);
     if (@as(ValueKind, b) == .Object) return @as(ValueKind, a) == .Object and self.extends_object(a.Object, b.Object); 
 
+    if (@as(ValueKind, b) == .Union) return self.extends_any_of(a, b.Union.variants_slice());
+    if (@as(ValueKind, a) == .Union) return self.extends_many_all(a.Union.variants_slice(), b);
+
     return false;
 }
 
@@ -353,7 +363,7 @@ fn extends_array(self: *VM, a: Array, b: Array) bool {
     // 1. `a` is an empty tuple [] which extends any Array<T> 
     // 2. `a` is either a tuple or regular Array<T>, in either case
     //     all of its `items` need to extend `b`'s Array type
-    if (!b.is_tuple_array()) return a.len == 0 or self.extends_array_all_items(a.items(), b.ptr.?[0]);
+    if (!b.is_tuple_array()) return a.len == 0 or self.extends_many_all(a.items(), b.ptr.?[0]);
     
     // Now we know `b` is a tuple. Then `a` extends `b` if `a` is a tuple of the same size
     // with each item extending the corresponding item in `b`
@@ -367,11 +377,20 @@ fn extends_array(self: *VM, a: Array, b: Array) bool {
     return true;
 }
 
-fn extends_array_all_items(self: *VM, a_items: []const Value, b_item: Value) bool {
+/// Returns true when all of `a_items` extends `b_item`
+fn extends_many_all(self: *VM, a_items: []const Value, b_item: Value) bool {
     for (a_items) |item| {
         if (!self.extends(item, b_item)) return false;
     }
     return true;
+}
+
+/// Returns true when `a` extends any of `b_items`
+fn extends_any_of(self: *VM, a: Value, b_items: []const Value) bool {
+    for (b_items) |item| {
+        if (self.extends(a, item)) return true;
+    }
+    return false;
 }
 
 fn index_value(self: *VM, object: Value, index: Value) Value {
@@ -417,7 +436,35 @@ fn update_object(self: *VM, alloc: Allocator, base: Object, additional: Object) 
     return Value.object(object);
 }
 
-fn new_string_from_slice(self: *VM, slice: []const u8) String {
+fn make_union(self: *VM, alloc: Allocator, variants: []const Value) !Union {
+    var variants_slice = try alloc.alloc(Value, variants.len);
+
+    var actual_len: u32 = 0;
+    for (variants) |variant| {
+        var extends_existing = false;
+        for (variants_slice) |existing_variant| {
+            if (self.extends(variant, existing_variant)) {
+                extends_existing = true;
+                break;
+            }
+        }
+
+        if (extends_existing) continue;
+        variants_slice[actual_len] = variant;
+        actual_len += 1;
+    }
+
+    if (actual_len != variants.len) {
+        variants_slice = try alloc.realloc(variants_slice, actual_len);
+    }
+
+    return .{
+        .variants = variants_slice.ptr,
+        .len = @intCast(actual_len),
+    };
+}
+
+fn make_string_from_slice(self: *VM, slice: []const u8) String {
     return self.interned_strings.get(slice) orelse .{
         .len = @intCast(slice.len),
         .ptr = @ptrCast(slice.ptr),
@@ -823,7 +870,10 @@ const Function = struct {
                     i += 1;
                     std.debug.print("{} INTERSECT: {}\n", .{j, count});
                 },
-                .Union => unreachable,
+                .Union => {
+                    const count = self.read_u8(&i);
+                    std.debug.print("{} Union: {d}\n", .{j, count});
+                },
                 .Print => {
                     std.debug.print("{} Print\n", .{j});
                 },
@@ -1038,6 +1088,7 @@ const ValueKind = enum {
     String,
     Array,
     Object,
+    Union,
 };
 
 const Value = union(ValueKind){
@@ -1053,12 +1104,19 @@ const Value = union(ValueKind){
     String: String,
     Array: Array,
     Object: Object,
+    Union: Union,
 
     fn negate(self: Value) Value {
         switch (self) {
             .Number => |v| return Value.number(-v),
             else => @panic("Invalid negation"),
         }
+    }
+
+    fn make_union(value: Union) Value {
+        return .{
+            .Union = value,
+        };
     }
 
     fn object(value: Object) Value {
@@ -1153,6 +1211,15 @@ const Value = union(ValueKind){
                     }
                 }
                 try write_str_expand(alloc, buf, "]\n", .{});
+            },
+            .Union => |v| {
+                const last = v.len -| 1;
+                for (v.variants[0..v.len], 0..) |variant, i| {
+                    try variant.encode_as_string(alloc, buf, format);
+                    if (i != last) {
+                        try write_str_expand(alloc, buf, " | ", .{});
+                    } 
+                }
             }
         }
     }
@@ -1314,6 +1381,17 @@ const Object = struct {
             return &fields[idx];
         }
         return null;
+    }
+};
+
+/// INVARIANTS:
+/// - `len` must always be >= 2, otherwise its not a union
+const Union = struct {
+    variants: [*]Value,
+    len: u32,
+
+    pub fn variants_slice(self: Union) []const Value {
+        return self.variants[0..self.len];
     }
 };
 

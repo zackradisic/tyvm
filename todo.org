@@ -395,6 +395,16 @@ there are some rust crates that implement persistent data structures, but they a
 what if the key/vals for an object were a slice/window of the stack?
 ** TODO Make ir repr more compact
 some places where we can box stuff
+** TODO Everything on the stack?
+What if we avoided heap allocations entirely and put everything on the stack.
+
+This is possible because values in type-level Typescript are immutable and follow stack based rules. For example, there aren't anything fancy like closures and captures variables that make the lifetimes of values go outside of the stack.
+
+If this is possible, it would drastically make everything simpler, especially memory management. The stack is a form of memory management, and freeing memory is as simple as popping values of the stack. The one exception is strings, but adding reference counting to strings alone is simple.
+
+Even things more complex like arrays and objects can live on the stack. There can be a "header" value that stores how the slice of values that make up the array/object. The only complexity is in popping the stack, this requires popping also the array elements / object fields. Same for peeking N values back in the stack.
+
+Maybe this is not worth it when we have reference counting.
 * TODO archive
 ** DONE Need distinction between Tuple vs. Array
 ** DONE Unable to distinguish arrays and single-item tuples
