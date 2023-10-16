@@ -1,4 +1,4 @@
-export type Print<T> = never;
+export type Print<T> = T;
 
 export type Add<A extends number, B extends number> = number;
 export type Sub<A extends number, B extends number> = number;
@@ -31,3 +31,4 @@ export type DrawCommand =
       width: number;
       height: number;
     };
+export type AssertEq<A, B> = void;

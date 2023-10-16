@@ -1,1 +1,3 @@
-export type Main<Arg extends string[]> = -420;
+import { AssertEq } from "./std";
+
+export type Main<Arg extends string[]> = AssertEq<-420, -420>;

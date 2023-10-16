@@ -1,4 +1,4 @@
-import { Print, Add, Sub, Lte, Eq, ParseInt, Panic } from "./std";
+import { Print, Add, Sub, Lte, Eq, Panic, AssertEq } from "./std";
 
 /**
  * Compute the Nth fibonacci number
@@ -16,8 +16,7 @@ type FibIter<
   ? Add<NminusOne, NminusTwo>
   : FibIter<N, Add<I, 1>, Add<NminusOne, NminusTwo>, NminusOne>;
 
-export type Main<Argv extends string[]> =
-  Print<`Value is ${Fib<10>}${"wow"} yay`>;
+export type Main<Argv extends string[]> = AssertEq<Fib<10>, 55>;
 
 // export type Main<Argv extends string[]> = ParseInt<
 //   Argv[0]

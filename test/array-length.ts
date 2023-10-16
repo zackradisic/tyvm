@@ -1,4 +1,4 @@
-import { Print, Add, Sub, Lte, Eq, ParseInt, Panic } from "./std";
+import { Print, Sub, Lte, Eq, Panic } from "./std";
 
 // Helper type to increment array by adding an element
 type Inc<ArrayType extends any[]> = [...ArrayType, unknown];

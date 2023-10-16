@@ -56,6 +56,8 @@ pub enum Op {
     Negate,
     Update,
 
+    AssertEq,
+
     Exit,
 }
 

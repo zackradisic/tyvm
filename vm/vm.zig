@@ -229,24 +229,22 @@ pub fn run(self: *VM) !void {
                 frame = self.cur_call_frame();
             },
             .Print => {
-                const args_count = frame.read_byte();
                 const val = self.peek(0);
                 if (@as(ValueKind, val) == ValueKind.String) {
                     print("{s}\n", .{val.String.as_str()});
                 } else {
                     var buf = std.ArrayListUnmanaged(u8){};
                     defer buf.deinit(std.heap.c_allocator);
-                    try val.encode_as_string(std.heap.c_allocator, &buf);
+                    try val.encode_as_string(std.heap.c_allocator, &buf, false);
                     print("{s}\n", .{buf.items.ptr[0..buf.items.len]});
                 }
-                self.pop_n(args_count);
             },
             .FormatString => {
                 const args_count = frame.read_byte();
                 const start = self.stack_top - args_count;
                 var str_array = std.ArrayListUnmanaged(u8){};
                 for (start[0..args_count]) |v_| {
-                    try v_.encode_as_string(std.heap.c_allocator, &str_array);
+                    try v_.encode_as_string(std.heap.c_allocator, &str_array, true);
                 }
                 str_array.shrinkAndFree(std.heap.c_allocator, str_array.items.len);
                 self.pop_n(args_count);
@@ -286,6 +284,11 @@ pub fn run(self: *VM) !void {
                 const new_object = try self.update_object(std.heap.c_allocator, object.Object, addition.Object);
                 self.push(new_object);
             },
+            .AssertEq => {
+                const b = self.pop();
+                const a = self.pop();
+                if (!self.eq(a, b)) @panic("Not equal");
+            },
             .Exit => return,
             else => { 
                 print("Unhandled op name: {s}\n", .{@tagName(op)});
@@ -293,6 +296,11 @@ pub fn run(self: *VM) !void {
             }
         }
     }
+}
+
+fn eq(self: *VM, a: Value, b: Value) bool {
+    // Doing very simple thing of checking A extends B and B extends A for equality
+    return self.extends(a, b) and self.extends(b, a);
 }
 
 /// Typescript's "extends" is a terrible name, but kept here for consistency's sake.
@@ -817,9 +825,7 @@ const Function = struct {
                 },
                 .Union => unreachable,
                 .Print => {
-                    const count = self.code[i];
-                    i += 1;
-                    std.debug.print("{} Print: {}\n", .{j, count});
+                    std.debug.print("{} Print\n", .{j});
                 },
                 .Constant => {
                     const idx = self.read_constant_table_idx(&i);
@@ -907,6 +913,9 @@ const Function = struct {
                 },
                 .Update => {
                     std.debug.print("{} Update\n", .{j});
+                },
+                .AssertEq => {
+                    std.debug.print("{} AssertEq\n", .{j});
                 },
                 else => { 
                     print("UNHANDLED: {s}\n", .{ @tagName(op) });
@@ -1011,6 +1020,8 @@ const Op = enum(u8) {
     Negate,
     Update,
 
+    AssertEq,
+
     Exit,
 };
 
@@ -1076,11 +1087,11 @@ const Value = union(ValueKind){
 
     fn debug(self: Value, alloc: Allocator) !void {
         var buf = std.ArrayListUnmanaged(u8){};
-        try self.encode_as_string(alloc, &buf);
+        try self.encode_as_string(alloc, &buf, true);
         print("VALUE: {s}\n", .{buf.items.ptr[0..buf.items.len]});
     }
 
-    fn encode_as_string(self: Value, alloc: Allocator, buf: *std.ArrayListUnmanaged(u8)) !void {
+    fn encode_as_string(self: Value, alloc: Allocator, buf: *std.ArrayListUnmanaged(u8), format: bool) !void {
         switch (self) {
             .Any => {
                 try write_str_expand(alloc, buf, "any", .{});
@@ -1101,7 +1112,11 @@ const Value = union(ValueKind){
                 try write_str_expand(alloc, buf, "object", .{});
             },
             .String => |v|{
-                try write_str_expand(alloc, buf, "\"{s}\"", .{v.as_str()});
+                if (format) {
+                    try write_str_expand(alloc, buf, "{s}", .{v.as_str()});
+                } else {
+                    try write_str_expand(alloc, buf, "\"{s}\"", .{v.as_str()});
+                }
             },
             .Bool => |v| {
                 if (v) {
@@ -1120,9 +1135,9 @@ const Value = union(ValueKind){
                     for (fields[0..v.len], 0..) |field_, i| {
                         const field: Object.Field = field_;
                         try write_str_expand(alloc, buf, "    ", .{});
-                        try Value.string(field.name).encode_as_string(alloc, buf);
+                        try Value.string(field.name).encode_as_string(alloc, buf, format);
                         try write_str_expand(alloc, buf, ": ", .{});
-                        try field.value.encode_as_string(alloc, buf);
+                        try field.value.encode_as_string(alloc, buf, format);
                         if (i != last) try write_str_expand(alloc, buf, ",\n", .{});
                     }
                 }
@@ -1133,7 +1148,7 @@ const Value = union(ValueKind){
                 if (v.ptr) |ptr| {
                     const last = v.len -| 1;
                     for (ptr[0..v.len], 0..) |val, i| {
-                        try val.encode_as_string(alloc, buf);
+                        try val.encode_as_string(alloc, buf, format);
                         if (i != last) try write_str_expand(alloc, buf, ", ", .{});
                     }
                 }

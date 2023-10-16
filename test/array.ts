@@ -1,4 +1,4 @@
-import { Print, Add, Sub, Lte, Eq, ParseInt, Panic } from "./std";
+import { Print, Add, Sub, Lte, Eq, Panic, AssertEq } from "./std";
 
 type FillArray<
   Count extends number,
@@ -15,4 +15,7 @@ type FillArrayImpl<
   ? Array
   : FillArrayImpl<Count, Add<I, 1>, Value, [Value, ...Array]>;
 
-export type Main<Args extends string[]> = Print<FillArray<4, "LOL", []>>;
+export type Main<Args extends string[]> = AssertEq<
+  Print<FillArray<4, "LOL", []>>,
+  ["LOL", "LOL", "LOL", "LOL"]
+>;

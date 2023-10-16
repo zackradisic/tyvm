@@ -573,6 +573,12 @@ impl<'alloc> Compiler<'alloc> {
                         self.push_op(Op::Update);
                         return;
                     }
+                    "AssertEq" => {
+                        assert_eq!(2, call.args.len());
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::AssertEq);
+                        return;
+                    }
                     _ => {}
                 }
 
@@ -581,8 +587,9 @@ impl<'alloc> Compiler<'alloc> {
                     // TODO: Need to actually properly resolve these to
                     // see if it is imported from the stdlib
                     "Print" => {
+                        assert_eq!(count, 1);
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
-                        self.push_bytes(Op::Print as u8, count);
+                        self.push_op(Op::Print);
                     }
                     "WriteFile" => {
                         if count != 2 {
