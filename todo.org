@@ -1,12 +1,59 @@
 #+title: Todo
 
 * TODO fucking important [2/14]
-** DONE Need distinction between Tuple vs. Array
 ** TODO Unions [1/3]
 in terms of representation, we just need =Vec<Value>= for now. later we can do specialization for common like =T | undefined=
 
-*** DONE normalizing unions
-*** TODO object edge case
+*** TODO Normalizing unions
+
+Typically Typescript "normalizes" unions:
+#+begin_src typescript
+// string | number | boolean
+type a = string | number | boolean | string
+#+end_src
+
+Basically when "merging" types into a union, we check if the in-progress constructed union doesn't already have a type that is a "super-type".
+
+Bad explanation. In the example above, the second "string" is ommitted because string already exists in the union. In another example:
+
+#+begin_src typescript
+// string | number | boolean
+type a = string | number | boolean | "hello"
+#+end_src
+
+="hello"= is ommitted because "hello" subtypes =string= which is already in the union.
+
+Perplexingly, this doesn't work for object literals:
+#+begin_src typescript
+// Simplifies to:
+// type b = {
+//     foo: 1;
+// } | {
+//     foo: 2;
+// } | {
+//     foo: 1;
+// }
+type b = { foo: 1 } | { foo: 2 } | { foo: 1 };
+#+end_src
+
+
+It even works in cases like this:
+#+begin_src typescript
+// Simplifies to:
+// type e = {
+//     foo: string;
+//     bar: number;
+// } | {
+//     foo: string;
+//     bar: number;
+// }
+type e = { foo: string, bar: number } | { foo: string, bar: number }
+#+end_src
+
+Which is very confusing because the objects are actually identical.
+
+This is actually part of the "Object edge case" explained in the next section.
+*** TODO Object edge case
 this is a weird edge case:
 #+begin_src typescript
 type Extends<A, B> = A extends B ? "extends" : "not extends";
@@ -37,9 +84,120 @@ there are a couple ways to solve this:
   when we know the conditions for this specialization are met, then we dispatch to =extends_object_union= function.
 
   this will iterate the keys of =a=. if one key has a value that is a union, we check if the value subtypes the corresponding value in =b=.
-
 - when "normalizing" unions we turn ={ foo: 1 } | { foo: 2 }= into ={ foo: 1 | 2 }=, or do this just before subtype checking
-*** TODO disjoint edge case
+
+**** Exploration: product types
+Another interesting property is that you can think of an "object expression with a member as a union" as having the distributed property:
+
+#+begin_src typescript
+type a = { foo: 1 | 2 };
+type b = { foo: 1 } | { foo: 2 };
+#+end_src
+
+We can think of the =|= operator as distributing the union over the object. Similar to distribute property from math:
+a \cdot (b + c) = a \cdot b + a \cdot c
+
+This analogy goes quite far, records are actually product types in type theory / FP.
+
+={ "foo" * (`1` + `2`) }=
+={ "foo" * `1`} + { "foo" * `2`}=
+
+With =a -> "foo"=, =b -> 1=, =c -> 2=.
+
+Let's see with a more practical example:
+
+#+begin_src typescript
+type circle = { type: 'circle', radius: number };
+type rectangle = { type: 'rectangle', w: number, h: number };
+type shape = circle | rectangle
+
+type a = { type: 'circle' | 'rectangle', }
+#+end_src
+**** Figured it out:
+
+The key insight to understanding this behaviour is to recognize that it /only/ works when subtyping against a discriminated union.
+
+A discriminated union is a union of N objects who share a *single* similar key, whose value is a *literal*.
+
+Those two subtle conditions are important:
+1. there must be one similar key, the discriminant key
+2. the discriminat key's value must be a literal type
+
+The union must satisfy all above conditions for it to be considered a discriminated union.
+
+Now that we understand what a discriminated union, we can observe that this weird edge case only works on them:
+#+begin_src typescript
+type Extends<A, B> = A extends B ? "extends" : "not extends";
+
+// `b` is discriminated union...
+type a = { foo: 1 | 2 };
+type b = { foo: 1 } | { foo: 2 };
+
+// so this extends check works
+type result1 = Extends<a, b>;
+
+// `d` is NOT a discriminated union...
+type c = { bar: number | string };
+type d = { bar: number } | { bar: string };
+
+// so this extends check doesn't work!
+type result2 = Extends<c, d>;
+#+end_src
+
+So it seems like the rule is that a discriminated union can be subtyped by an object whose keys and values are merged from the discriminated union, example:
+#+begin_src typescript
+type a = { foo: 1 | 2, a: string, b: number};
+type b = { foo: 1, a: string } | { foo: 2, b: number };
+
+// this extends check works
+type result1 = Extends<a, b>;
+#+end_src
+
+Unfortunately, this doesn't seem to be the case, not exactly:
+#+begin_src typescript
+type a = { foo: 1 | 2, bar: string | number };
+type b = { foo: 1, bar: string } | { foo: 2, bar: number };
+
+// doesn't extend
+type result1 = Extends<e, f>
+#+end_src
+
+Logically, we can see why. The type =a= allows us to put ={ foo: 1, bar: number }=, which is not valid because its a mix-match of the properties from the two variants.
+
+The rule here is the =|= operator can only distribute over the discriminant keys in a discriminant union.
+
+If we take an algebraic approach at looking at it as sum types and product types:
+#+begin_src
+foo ^ `1` * bar ^ string + foo ^ `2` * bar ^ number
+(foo ^ (`1` + `2`)) (bar ^ string + bar ^ number)  // b. but this is invalid in a record
+// a. cant distribute over non discriminant fields, so cant do this:
+(foo ^ (`1` + `2`)) (bar ^ (string + number))
+#+end_src
+
+Now this /does/ work in this situation:
+#+begin_src typescript
+type a = { foo: 1 | 2, a: string, b: number };
+type b = { foo: 1, a: string } | { foo: 2, b: number };
+
+type result1 = Extends<a, b>
+#+end_src
+
+The algebraic derivation:
+#+begin_src
+foo^`1` * a^string + foo^2 * b^number
+(foo^(`1` + `2`)) * (a^string + b^number) // Which is type of `a`
+#+end_src
+
+So we need to: determine if we are doing A subtypes B where: B is discriminant union, A is object with discriminant key with union of B's values for that key. A can only have a subset of the discriminant values, e.g.:
+
+#+begin_src typescript
+type a = { foo: 2 | 3, b: string, c: number };
+type b = { foo: 1, a: string } | { foo: 2, b: number } | { foo: 3, b: number };
+
+type result1 = Extends<a, b>
+#+end_src
+
+*** TODO Disjoint edge case
 if two unions are disjoint:
 #+begin_src typescript
 type ExtendsCheck<A, B> = A extends B ? "yes" : "no";
@@ -51,8 +209,6 @@ type t5 = ExtendsCheck<
 
 the result is: "yes" | "no"
 
-** DONE Unable to distinguish arrays and single-item tuples
-I realized I made a very naive error in the way arrays/tuples are represented, which means that single-items and regular arrays are indistinguishable from each other which is bad.
 ** TODO Non-object type keys
 all types are actually objects and have additional keys
 
@@ -240,6 +396,9 @@ what if the key/vals for an object were a slice/window of the stack?
 ** TODO Make ir repr more compact
 some places where we can box stuff
 * TODO archive
+** DONE Need distinction between Tuple vs. Array
+** DONE Unable to distinguish arrays and single-item tuples
+I realized I made a very naive error in the way arrays/tuples are represented, which means that single-items and regular arrays are indistinguishable from each other which is bad.
 ** DONE String interpolation
 ** DONE string interning
 this is really important, otherwise string value equality won't work

@@ -118,6 +118,11 @@ pub fn run(self: *VM) !void {
                 const a = self.pop();
                 self.push(Value.number(a.Number - b.Number));
             },
+            .Mul => {
+                const b = self.pop();
+                const a = self.pop();
+                self.push(Value.number(a.Number * b.Number));
+            },
             .Eq => {
                 const b = self.pop();
                 const a = self.pop();
@@ -159,6 +164,9 @@ pub fn run(self: *VM) !void {
             .String => {
                 self.push(.StringKeyword);
             },
+            .Object => {
+                self.push(.ObjectKeyword);
+            },
             .Any => {
                 self.push(.Any);
             },
@@ -194,7 +202,8 @@ pub fn run(self: *VM) !void {
             },
             .Constant => {
                 const constant_idx = frame.read_constant_idx();
-                self.push(self.read_constant(constant_idx));
+                const constant = self.read_constant(constant_idx);
+                self.push(constant);
             },
             .GetGlobal => {
                 const constant_idx = frame.read_constant_idx();
@@ -268,37 +277,21 @@ pub fn run(self: *VM) !void {
                 const ret = self.index_value(object, constant);
                 self.push(ret);
             },
+            .Update => {
+                const addition = self.pop();
+                const object = self.pop();
+                if (!self.extends(object, .ObjectKeyword) and !self.extends(addition, .ObjectKeyword)) {
+                    @panic("Both LHS and RHS of Update<...> must extend `obect`");
+                }
+                const new_object = try self.update_object(std.heap.c_allocator, object.Object, addition.Object);
+                self.push(new_object);
+            },
             .Exit => return,
             else => { 
                 print("Unhandled op name: {s}\n", .{@tagName(op)});
                 @panic("Unhandled op.");
             }
         }
-    }
-}
-
-fn index_value(self: *VM, object: Value, index: Value) Value {
-    _ = self;
-    switch (object) {
-        .Object => |obj| {
-            const field = obj.get_field(index.String) orelse return .Any;
-            return field.value;
-        },
-        .Array => |arr| {
-            if (@as(ValueKind, index) == ValueKind.Number) { 
-                if (std.math.floor(index.Number) != index.Number) return .Undefined;
-                return arr.item_at_index(@intFromFloat(index.Number));
-            }
-            // TODO: 
-            unreachable;
-        },
-        .String => |str| {
-            _ = str;
-            if (@as(ValueKind, index) == ValueKind.Number) return .StringKeyword;
-            // TODO: 
-            unreachable;
-        },
-        else => return .Any,
     }
 }
 
@@ -311,6 +304,7 @@ fn extends(self: *VM, a: Value, b: Value) bool {
     if (b == .NumberKeyword) return @as(ValueKind, a) == ValueKind.Number or @as(ValueKind, a) == ValueKind.NumberKeyword;
     if (b == .BoolKeyword) return @as(ValueKind, a) == ValueKind.Bool or @as(ValueKind, a) == ValueKind.BoolKeyword;
     if (b == .StringKeyword) return @as(ValueKind, a) == ValueKind.String or @as(ValueKind, a) == ValueKind.StringKeyword;
+    if (b == .ObjectKeyword) return @as(ValueKind, a) == ValueKind.Object or @as(ValueKind, a) == ValueKind.ObjectKeyword;
 
     if (@as(ValueKind, b) == .Number) return @as(ValueKind, a) == .Number and a.Number == b.Number;
     if (@as(ValueKind, b) == .Bool) return @as(ValueKind, a) == .Bool and a.Bool == b.Bool;
@@ -370,6 +364,49 @@ fn extends_array_all_items(self: *VM, a_items: []const Value, b_item: Value) boo
         if (!self.extends(item, b_item)) return false;
     }
     return true;
+}
+
+fn index_value(self: *VM, object: Value, index: Value) Value {
+    _ = self;
+    switch (object) {
+        .Object => |obj| {
+            const field = obj.get_field(index.String) orelse return .Any;
+            return field.value;
+        },
+        .Array => |arr| {
+            if (@as(ValueKind, index) == ValueKind.Number) { 
+                if (std.math.floor(index.Number) != index.Number) return .Undefined;
+                return arr.item_at_index(@intFromFloat(index.Number));
+            }
+            // TODO: 
+            unreachable;
+        },
+        .String => |str| {
+            _ = str;
+            if (@as(ValueKind, index) == ValueKind.Number) return .StringKeyword;
+            // TODO: 
+            unreachable;
+        },
+        else => return .Any,
+    }
+}
+
+fn update_object(self: *VM, alloc: Allocator, base: Object, additional: Object) !Value {
+    _ = self;
+    var new_fields = try alloc.alloc(Object.Field, base.len + additional.len);
+    if (base.len > 0) @memcpy(new_fields[0..base.len], base.fields_slice());
+    if (additional.len > 0) @memcpy(new_fields[base.len..base.len + additional.len], additional.fields_slice());
+
+    std.sort.block(Object.Field, new_fields, {}, Object.Field.less_than_key);
+
+    var object: Object = .{
+        .fields = new_fields.ptr,
+        .len = base.len + additional.len
+    };
+
+    object.panic_on_duplicate_keys();
+
+    return Value.object(object);
 }
 
 fn new_string_from_slice(self: *VM, slice: []const u8) String {
@@ -758,6 +795,9 @@ const Function = struct {
                 .String => {
                     std.debug.print("{} String\n", .{j});
                 },
+                .Object => {
+                    std.debug.print("{} Object\n", .{j});
+                },
                 .Any => {
                     std.debug.print("{} Any\n", .{j});
                 },
@@ -766,6 +806,9 @@ const Function = struct {
                 },
                 .Sub => {
                     std.debug.print("{} SUB\n", .{j});
+                },
+                .Mul => {
+                    std.debug.print("{} Mul\n", .{j});
                 },
                 .Intersect => {
                     const count = self.code[i];
@@ -862,6 +905,9 @@ const Function = struct {
                 .Exit => {
                     std.debug.print("{} Exit\n", .{j});
                 },
+                .Update => {
+                    std.debug.print("{} Update\n", .{j});
+                },
                 else => { 
                     print("UNHANDLED: {s}\n", .{ @tagName(op) });
                     @panic("Unimplemented: "); 
@@ -911,6 +957,7 @@ const Op = enum(u8) {
     // 2 stack operands
     Add = 0,
     Sub,
+    Mul,
     Eq,
     Lte,
     Intersect,
@@ -935,6 +982,7 @@ const Op = enum(u8) {
     Number,
     Boolean,
     String,
+    Object,
     PopCallFrame,
     // next instr is fields
     MakeObj,
@@ -942,7 +990,6 @@ const Op = enum(u8) {
     MakeArray,
     MakeTuple,
     MakeTupleSpread,
-    MakeUnion,
 
     Index,
     IndexLit,
@@ -960,7 +1007,9 @@ const Op = enum(u8) {
     FormatString,
     Any,
     Length,
+
     Negate,
+    Update,
 
     Exit,
 };
@@ -971,6 +1020,7 @@ const ValueKind = enum {
     NumberKeyword,
     BoolKeyword,
     StringKeyword,
+    ObjectKeyword,
 
     Number,
     Bool,
@@ -985,6 +1035,7 @@ const Value = union(ValueKind){
     NumberKeyword,
     BoolKeyword,
     StringKeyword,
+    ObjectKeyword,
 
     Number: f64,
     Bool: bool,
@@ -1046,6 +1097,9 @@ const Value = union(ValueKind){
             .StringKeyword => {
                 try write_str_expand(alloc, buf, "string", .{});
             },
+            .ObjectKeyword => {
+                try write_str_expand(alloc, buf, "object", .{});
+            },
             .String => |v|{
                 try write_str_expand(alloc, buf, "\"{s}\"", .{v.as_str()});
             },
@@ -1060,19 +1114,19 @@ const Value = union(ValueKind){
                 try write_str_expand(alloc, buf, "{d}", .{v});
             },
             .Object => |v| {
-                try write_str_expand(alloc, buf, "{{", .{});
+                try write_str_expand(alloc, buf, "{{\n", .{});
                 if (v.fields) |fields| {
                     const last = v.len -| 1;
                     for (fields[0..v.len], 0..) |field_, i| {
                         const field: Object.Field = field_;
-                        try write_str_expand(alloc, buf, "    k", .{});
+                        try write_str_expand(alloc, buf, "    ", .{});
                         try Value.string(field.name).encode_as_string(alloc, buf);
                         try write_str_expand(alloc, buf, ": ", .{});
                         try field.value.encode_as_string(alloc, buf);
                         if (i != last) try write_str_expand(alloc, buf, ",\n", .{});
                     }
                 }
-                try write_str_expand(alloc, buf, "}}\n", .{});
+                try write_str_expand(alloc, buf, "\n}}\n", .{});
             },
             .Array => |v| {
                 try write_str_expand(alloc, buf, "[", .{});
@@ -1192,6 +1246,21 @@ const Object = struct {
         }
     };
 
+    /// INVARIANT: The fields of the object are sorted
+    pub fn panic_on_duplicate_keys(self: *const Object) void {
+        if (self.len <= 1) return;
+        const fields: []const Field = self.fields.?[0..self.len];
+
+        // Since the object is sorted, duplicate keys will be adjacent to each other
+        var i: usize = 0;
+        var j: usize = 1;
+        while (j < self.len) {
+            if (fields[i].name.ptr == fields[j].name.ptr) @panic("Duplicate keys!");
+            i += 1;
+            j += 1;
+        }
+    }
+
     pub fn new(alloc: Allocator, fields: []const Value) !Object {
         std.debug.assert(fields.len % 2 == 0);
 
@@ -1210,6 +1279,8 @@ const Object = struct {
             .fields = object_fields.ptr,
             .len = @intCast(fields.len / 2)
         };
+
+        object.panic_on_duplicate_keys();
 
         return object;
     }

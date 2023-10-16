@@ -4,11 +4,11 @@ pub enum Op {
     // 2 stack operands
     Add = 0,
     Sub,
+    Mul,
     Eq,
     Lte,
     // 2 stack operands
     Intersect,
-    // 2 stack operands
     Union,
     // N stack operands
     Print,
@@ -27,6 +27,7 @@ pub enum Op {
     Number,
     Boolean,
     String,
+    Object,
     PopCallFrame,
     // next instr is fields
     MakeObj,
@@ -34,7 +35,6 @@ pub enum Op {
     MakeArray,
     MakeTuple,
     MakeTupleSpread,
-    MakeUnion,
 
     Index,
     IndexLit,
@@ -54,6 +54,7 @@ pub enum Op {
     Length,
 
     Negate,
+    Update,
 
     Exit,
 }

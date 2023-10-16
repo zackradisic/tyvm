@@ -380,6 +380,7 @@ impl<'alloc> Compiler<'alloc> {
 
     fn compile_expr(&mut self, expr: &ir::Expr<'alloc>) {
         match expr {
+            Expr::ObjectKeyword => self.push_op(Op::Object),
             Expr::Boolean => self.push_op(Op::Boolean),
             Expr::Unary(Unary {
                 op: UnaryOperator::UnaryNegation,
@@ -401,8 +402,9 @@ impl<'alloc> Compiler<'alloc> {
                 self.push_bytes(Op::FormatString as u8, count)
             }
             Expr::Union(union) => {
+                let len: u8 = union.variants.len().try_into().unwrap();
                 union.variants.iter().for_each(|v| self.compile_expr(v));
-                self.push_bytes(Op::Union as u8, union.variants.len() as u8);
+                self.push_bytes(Op::Union as u8, len);
             }
             Expr::Let(let_expr) => {
                 match let_expr.cond {
@@ -547,6 +549,12 @@ impl<'alloc> Compiler<'alloc> {
                         self.push_op(Op::Sub);
                         return;
                     }
+                    "Mul" => {
+                        assert_eq!(2, call.args.len());
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::Mul);
+                        return;
+                    }
                     "Eq" => {
                         assert_eq!(2, call.args.len());
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
@@ -559,10 +567,16 @@ impl<'alloc> Compiler<'alloc> {
                         self.push_op(Op::Lte);
                         return;
                     }
+                    "Update" => {
+                        assert_eq!(2, call.args.len());
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::Update);
+                        return;
+                    }
                     _ => {}
                 }
 
-                let count = call.args.len() as u8;
+                let count: u8 = call.args.len().try_into().unwrap();
                 match call.name() {
                     // TODO: Need to actually properly resolve these to
                     // see if it is imported from the stdlib

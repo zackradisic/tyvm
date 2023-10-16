@@ -43,6 +43,7 @@ pub enum Expr<'ir> {
     String,
     Object(&'ir Object<'ir>),
     ObjectLit(&'ir ObjectLit<'ir>),
+    ObjectKeyword,
     Call(&'ir Call<'ir>),
     If(&'ir If<'ir>),
     Intersect(&'ir Intersect<'ir>),
@@ -85,8 +86,9 @@ impl<'ir> Expr<'ir> {
             Expr::Number => true,
             Expr::String => true,
             Expr::Object(obj) => obj.can_be_object_lit(),
+            Expr::ObjectLit(_) => true,
+            Expr::ObjectKeyword => true,
             Expr::Intersect(intersect) => intersect.can_be_object_lit(),
-            Expr::ObjectLit(lit) => true,
             Expr::Call(_) => false,
             Expr::If(_) => false,
             Expr::Array(arr) => arr.the_type.is_comptime_known(),
@@ -178,6 +180,7 @@ pub struct Let<'ir> {
 
 #[derive(Debug)]
 pub struct Union<'ir> {
+    /// TODO: Discriminated union
     pub variants: AllocVec<'ir, &'ir Expr<'ir>>,
 }
 
@@ -390,7 +393,16 @@ impl<'ir> Transform<'ir> {
                 Expr::FormattedString(self.arena.alloc(FormattedString { components }))
             }
             TSType::TSUnionType(union) => {
-                todo!("UNION: {:#?}", union)
+                let mut variants = AllocVec::with_capacity_in(union.types.len(), self.arena);
+
+                variants.extend(
+                    union
+                        .types
+                        .iter()
+                        .map(|t| self.arena.alloc(self.transform_type(t, false)) as &_),
+                );
+
+                Expr::Union(self.arena.alloc(Union { variants }))
             }
             TSType::TSIndexedAccessType(index) => Expr::Index(
                 self.arena.alloc(Index {
@@ -562,10 +574,10 @@ impl<'ir> Transform<'ir> {
             TSType::TSStringKeyword(_) => Expr::String,
             TSType::TSAnyKeyword(_) => Expr::Any,
             TSType::TSBooleanKeyword(_) => Expr::Boolean,
+            TSType::TSObjectKeyword(_) => Expr::ObjectKeyword,
             TSType::TSBigIntKeyword(_) => todo!(),
             TSType::TSNeverKeyword(_) => todo!(),
             TSType::TSNullKeyword(_) => todo!(),
-            TSType::TSObjectKeyword(_) => todo!(),
             TSType::TSSymbolKeyword(_) => todo!(),
             TSType::TSThisKeyword(_) => todo!(),
             TSType::TSUndefinedKeyword(_) => todo!(),
