@@ -293,9 +293,7 @@ pub fn run(self: *VM) !void {
                 const args_base = self.stack_top - count;
                 const args = args_base[0..count];
                 const union_val = try self.make_union(std.heap.c_allocator, args);
-                var union_ptr = try std.heap.c_allocator.create(Union);
-                union_ptr.* = union_val;
-                self.push(Value.make_union(union_ptr));
+                self.push(union_val);
             },
             .Exit => return,
             else => { 
@@ -437,9 +435,14 @@ fn update_object(self: *VM, alloc: Allocator, base: Object, additional: Object) 
     return Value.object(object);
 }
 
-fn make_union(self: *VM, alloc: Allocator, variants: []const Value) !Union {
+/// This creates a union from the given list of variants. The variants may
+/// normalize to a single value, so it is not guaranteed that the resultant
+/// Value is a Union.
+fn make_union(self: *VM, alloc: Allocator, variants: []const Value) !Value {
     var variants_list = try std.ArrayListUnmanaged(Value).initCapacity(alloc, variants.len);
 
+    // Flatten/normalize the union by only allowing the largest types.
+    // TODO: This is broken, just use the O(N^2) algo for now, but we can make it smarter by using some heuristics (e.g. if a string is present in the union, we can omit all string literals)
     for (variants) |variant| {
         if (@as(ValueKind, variant) == .Union) {
             for (variant.Union.variants_slice()) |nested_variant| {
@@ -450,14 +453,80 @@ fn make_union(self: *VM, alloc: Allocator, variants: []const Value) !Union {
         try self.make_union_impl(alloc, variant, &variants_list);
     }
 
+    // If the normalized union is just a single type, return it
+    if (variants_list.items.len == 1) {
+        defer variants_list.deinit(alloc);
+        return variants_list.items[0];
+    }
+
     if (variants_list.items.len != variants.len) {
         variants_list.shrinkAndFree(alloc, variants_list.items.len);
     }
 
-    return .{
+    // Detect if the union is a tagged union
+    // 1. Every variant must be an object
+    // 2. There must be a common key among them (the "discriminant" key)
+    // 3. The value of this discriminant key must be a literal
+    // 4. There can only be one discriminant key/value pair
+
+    // Check 1
+    const all_objects = all_objects: {
+        for (variants_list.items) |variant| {
+            if (@as(ValueKind, variant) != .Object) break :all_objects false;
+        }
+        break :all_objects true;
+    };
+
+    const discriminant_key: ?String = discriminant_key: {
+        if (all_objects)  {
+            // Check 2-4
+            const variants_len = variants_list.items.len;
+
+            var key_counts = std.AutoArrayHashMap([*]const u8, struct { count: u8, len: u32 }).init(alloc);
+            defer key_counts.deinit();
+
+            for (variants_list.items) |variant| {
+                const obj: Object = variant.Object;
+                for (obj.fields_slice()) |*field| {
+
+                    const value = key_counts.getPtr(field.name.ptr) orelse {
+                        if (field.value.as_literal() == null) continue;
+                        try key_counts.put(field.name.ptr, .{ .count = 1, .len = field.name.len });
+                        continue;
+                    };
+
+                    if (field.value.as_literal() == null) {
+                        _ = key_counts.swapRemove(field.name.ptr);
+                    } else {
+                        value.count += 1;
+                    }
+                }
+            }
+
+            var possible_tag_key: ?struct { ptr: [*]const u8, len: u32 } = null;
+            var iter = key_counts.iterator();
+            while (iter.next()) |entry| {
+                if (entry.value_ptr.count == variants_len) {
+                    // If there is more than one key that matches the conditions for
+                    // a discriminant key, then all fail.
+                    if (possible_tag_key != null) break :discriminant_key null;
+                    possible_tag_key = . { .ptr = entry.key_ptr.*, .len = entry.value_ptr.len };
+                }
+            }
+
+            break :discriminant_key if (possible_tag_key) |tag| .{ .ptr = tag.ptr, .len = tag.len } else null;
+        }
+        break :discriminant_key null;
+    };
+
+    var union_ptr = try alloc.create(Union);
+    union_ptr.* = .{
         .variants = variants_list.items.ptr,
         .len = @intCast(variants_list.items.len),
+        .discriminant_key = discriminant_key,
     };
+
+    return Value.make_union(union_ptr);
 }
 
 fn make_union_impl(self: *VM, alloc: Allocator, potential_variant: Value, existing_variants: *std.ArrayListUnmanaged(Value)) !void {
@@ -1094,6 +1163,12 @@ const ValueKind = enum {
     Union,
 };
 
+const Literal = union(enum) {
+    Number: f64,
+    Bool: bool,
+    String: String,
+};
+
 const Value = union(ValueKind){
     Any,
     Undefined,
@@ -1108,6 +1183,15 @@ const Value = union(ValueKind){
     Array: Array,
     Object: Object,
     Union: *Union,
+
+    fn as_literal(self: Value) ?Literal {
+        return switch (self) {
+            .Number => |v| .{ .Number = v },
+            .Bool => |b| .{ .Bool = b },
+            .String => |s| .{ .String = s },
+            else => null,
+        };
+    }
 
     fn negate(self: Value) Value {
         switch (self) {
@@ -1394,8 +1478,9 @@ const Object = struct {
 const Union = struct {
     variants: [*]Value,
     len: u32,
+    discriminant_key: ?String,
 
-    pub fn variants_slice(self: Union) []const Value {
+    pub fn variants_slice(self: *const Union) []const Value {
         return self.variants[0..self.len];
     }
 };

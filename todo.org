@@ -256,8 +256,9 @@ function someFunc3(x: discriminatedUnionWithNormalUnion2) {
 #+end_src
 
 All three variants have the =charAt(pos: number): string= function property.
+**** TODO disjoint objects become object with =never= key
 
-*** TODO Discriminated unions [0/2]
+*** TODO Discriminated unions [1/2]
 
 We need to distinguish unions from discriminated unions because subtyping logic is different for discriminated unions. (See "Object edge case" and "Disjoint edge case" above).
 
@@ -306,7 +307,7 @@ Under the algorithm, =a= does not subtype =b=. But intuitively, it feels like ={
 So we want this behaviour. How do we make it work?
 
 The key insight is that the =|= operator /distributes over the discriminant key of a discriminated union/.
-**** TODO Detect discriminated unions and store their tag
+**** DONE Detect discriminated unions and store their tag
 **** TODO Implement specialized discriminated union subtype logic
 
 ** TODO Keys on non-object types
