@@ -437,31 +437,34 @@ fn update_object(self: *VM, alloc: Allocator, base: Object, additional: Object) 
 }
 
 fn make_union(self: *VM, alloc: Allocator, variants: []const Value) !Union {
-    var variants_slice = try alloc.alloc(Value, variants.len);
+    var variants_list = try std.ArrayListUnmanaged(Value).initCapacity(alloc, variants.len);
 
     var actual_len: u32 = 0;
     for (variants) |variant| {
-        var extends_existing = false;
-        for (variants_slice) |existing_variant| {
-            if (self.extends(variant, existing_variant)) {
-                extends_existing = true;
-                break;
+        if (@as(ValueKind, variant) == .Union) {
+            for (variant.Union.variants_slice()) |nested_variant| {
+                try self.make_union_impl(alloc, nested_variant, &variants_list);
             }
+            continue;
         }
-
-        if (extends_existing) continue;
-        variants_slice[actual_len] = variant;
-        actual_len += 1;
+        try self.make_union_impl(alloc, variant, &variants_list);
     }
 
     if (actual_len != variants.len) {
-        variants_slice = try alloc.realloc(variants_slice, actual_len);
+        variants_list.shrinkAndFree(alloc, variants_list.items.len);
     }
 
     return .{
-        .variants = variants_slice.ptr,
+        .variants = variants_list.items.ptr,
         .len = @intCast(actual_len),
     };
+}
+
+fn make_union_impl(self: *VM, alloc: Allocator, potential_variant: Value, existing_variants: *std.ArrayListUnmanaged(Value)) !void {
+    for (existing_variants.items) |existing_variant| {
+        if (self.extends(potential_variant, existing_variant)) return;
+    }
+    try existing_variants.append(alloc, potential_variant);
 }
 
 fn make_string_from_slice(self: *VM, slice: []const u8) String {
@@ -1386,6 +1389,8 @@ const Object = struct {
 
 /// INVARIANTS:
 /// - `len` must always be >= 2, otherwise its not a union
+/// - `variants` is always **flat**, meaning no Value in `variants` will be a Union. 
+///    This ensures that normalizing unions is cheap.
 const Union = struct {
     variants: [*]Value,
     len: u32,
