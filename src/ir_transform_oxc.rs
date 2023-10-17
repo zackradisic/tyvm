@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::ops::Deref;
 
 use crate::ir::*;
+use crate::ir_transform::IrTransform;
 use crate::Arena;
 use oxc_allocator::Box;
 use oxc_allocator::Vec as AllocVec;
@@ -20,8 +21,16 @@ pub struct Transform<'ir> {
     pub arena: &'ir Arena,
 }
 
-impl<'ir> Transform<'ir> {
-    pub fn transform_oxc(&self, program: &'ir ast::Program<'ir>) -> Program<'ir> {
+impl<'output> IrTransform<'output> for Transform<'output> {
+    type InputAst<'a> = ast::Program<'a>;
+
+    fn transform<'a>(&self, program: &'a Self::InputAst<'a>) -> crate::ir::Program<'output> {
+        self.transform_oxc(program)
+    }
+}
+
+impl<'input, 'ir> Transform<'ir> {
+    pub fn transform_oxc(&self, program: &'input ast::Program<'input>) -> Program<'ir> {
         let mut stmts = AllocVec::new_in(self.arena);
 
         for stmt in &program.body {
@@ -33,7 +42,7 @@ impl<'ir> Transform<'ir> {
         Program { stmts }
     }
 
-    fn transform_stmt(&self, stmt: &'ir ast::Statement<'ir>) -> Option<Statement<'ir>> {
+    fn transform_stmt(&self, stmt: &'input ast::Statement<'input>) -> Option<Statement<'ir>> {
         match stmt {
             ast::Statement::Declaration(decl) => self.transform_decl(decl),
             ast::Statement::ModuleDeclaration(module_decl) => match module_decl.deref() {
@@ -51,7 +60,7 @@ impl<'ir> Transform<'ir> {
         }
     }
 
-    fn transform_decl(&self, decl: &'ir ast::Declaration<'ir>) -> Option<Statement<'ir>> {
+    fn transform_decl(&self, decl: &'input ast::Declaration<'input>) -> Option<Statement<'ir>> {
         match decl {
             Declaration::TSTypeAliasDeclaration(let_decl) => Some(Statement::LetDecl(
                 self.transform_type_alias_decl(&let_decl),
@@ -64,7 +73,7 @@ impl<'ir> Transform<'ir> {
         }
     }
 
-    fn transform_ts_type_param(&self, param: &'ir ast::TSTypeParameter<'ir>) -> FnParam<'ir> {
+    fn transform_ts_type_param(&self, param: &'input ast::TSTypeParameter<'input>) -> FnParam<'ir> {
         let default: Option<Expr<'ir>> = match &param.default {
             Some(val) => Some(self.transform_type(&val, false)),
             None => None,
@@ -82,7 +91,7 @@ impl<'ir> Transform<'ir> {
 
     fn transform_type_alias_decl(
         &self,
-        alias_decl: &'ir ast::TSTypeAliasDeclaration<'ir>,
+        alias_decl: &'input ast::TSTypeAliasDeclaration<'input>,
     ) -> GlobalDecl<'ir> {
         let ident = binding_ident_to_identifier(self.arena, &alias_decl.id);
         if let Some(params) = &alias_decl.type_parameters {
@@ -105,7 +114,7 @@ impl<'ir> Transform<'ir> {
         })))
     }
 
-    fn transform_type(&self, ty: &'ir ast::TSType<'ir>, tail_call: bool) -> Expr<'ir> {
+    fn transform_type(&self, ty: &'input ast::TSType<'input>, tail_call: bool) -> Expr<'ir> {
         match ty {
             TSType::TSTemplateLiteralType(template) => {
                 let mut components = AllocVec::<Expr<'ir>>::new_in(self.arena);
@@ -127,7 +136,7 @@ impl<'ir> Transform<'ir> {
                         }
 
                         let val = Expr::StringLiteral(self.arena.alloc(StringLiteral {
-                            value: value.as_str(),
+                            value: self.arena.alloc_str(value.as_str()),
                         }));
 
                         i += 1;
@@ -233,7 +242,7 @@ impl<'ir> Transform<'ir> {
                 match &cond_ty.extends_type {
                     TSType::TSInferType(infer) => {
                         let let_expr = Let {
-                            name: &infer.type_parameter.name.name,
+                            name: self.arena.alloc_str(&infer.type_parameter.name.name),
                             check: self
                                 .arena
                                 .alloc(self.transform_type(&cond_ty.check_type, false)),
@@ -299,7 +308,7 @@ impl<'ir> Transform<'ir> {
                     );
 
                     let name = match &ty_ref.type_name {
-                        TSTypeName::IdentifierReference(n) => n.name.as_str(),
+                        TSTypeName::IdentifierReference(n) => self.arena.alloc_str(n.name.as_str()),
                         TSTypeName::QualifiedName(_) => todo!(),
                     };
 
@@ -309,7 +318,7 @@ impl<'ir> Transform<'ir> {
                         tail_call,
                     }));
                 }
-                Expr::Identifier(ts_type_name_to_identifier(&ty_ref.type_name))
+                Expr::Identifier(ts_type_name_to_identifier(self.arena, &ty_ref.type_name))
             }
             TSType::TSLiteralType(lit_type) => match &lit_type.literal {
                 TSLiteral::BooleanLiteral(b) => {
@@ -317,7 +326,7 @@ impl<'ir> Transform<'ir> {
                 }
                 TSLiteral::StringLiteral(s) => {
                     Expr::StringLiteral(self.arena.alloc(StringLiteral {
-                        value: s.value.as_str(),
+                        value: self.arena.alloc_str(s.value.as_str()),
                     }))
                 }
                 TSLiteral::NumberLiteral(n) => {
@@ -364,7 +373,7 @@ impl<'ir> Transform<'ir> {
         }
     }
 
-    fn transform_expr(&self, expr: &'ir ast::Expression<'ir>, tail_call: bool) -> Expr<'ir> {
+    fn transform_expr(&self, expr: &'input ast::Expression<'input>, tail_call: bool) -> Expr<'ir> {
         match expr {
             Expression::NumberLiteral(num) => {
                 Expr::NumberLiteral(self.arena.alloc(NumberLiteral { value: num.value }))
@@ -412,16 +421,19 @@ impl<'ir> Transform<'ir> {
     }
 }
 
-fn ts_type_name_to_identifier<'ir>(tname: &'ir TSTypeName<'ir>) -> Ident<'ir> {
+fn ts_type_name_to_identifier<'input, 'ir>(
+    arena: &'ir Arena,
+    tname: &'input TSTypeName<'input>,
+) -> Ident<'ir> {
     match tname {
-        TSTypeName::IdentifierReference(refer) => Ident(&refer.name),
+        TSTypeName::IdentifierReference(refer) => Ident(arena.alloc_str(&refer.name)),
         TSTypeName::QualifiedName(_) => todo!(),
     }
 }
 
-pub fn binding_ident_to_identifier<'ir>(
+pub fn binding_ident_to_identifier<'input, 'ir>(
     arena: &'ir Arena,
-    b: &'ir BindingIdentifier,
+    b: &'input BindingIdentifier,
 ) -> Ident<'ir> {
-    Ident(&b.name)
+    Ident(arena.alloc_str(b.name.as_str()))
 }
