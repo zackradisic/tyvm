@@ -5,13 +5,9 @@ use std::num::NonZeroUsize;
 use std::thread::panicking;
 
 use crate::common::AllocBox as Box;
-use crate::ir::{Expr, GlobalDecl, ObjectLit, TupleItem, Unary};
+use crate::ir::{Expr, GlobalDecl, NumberLiteral, ObjectLit, TupleItem, Unary, UnaryOperator};
 use crate::op::Op;
 use crate::{common::*, ir};
-
-use oxc_ast::ast;
-use oxc_ast::ast::*;
-use oxc_syntax::operator::UnaryOperator;
 
 pub const GLOBAL_STR: &'static str = "__tyvm_global";
 pub const MAIN_STR: &'static str = "Main";
@@ -572,7 +568,7 @@ impl<'alloc> Compiler<'alloc> {
             }
             ir::Expr::Call(call) => {
                 let count: u8 = call.args.len().try_into().unwrap();
-                match call.name() {
+                match call.name {
                     "Add" => {
                         assert_eq!(2, call.args.len());
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
@@ -624,7 +620,7 @@ impl<'alloc> Compiler<'alloc> {
                     _ => {}
                 }
 
-                match call.name() {
+                match call.name {
                     // TODO: Need to actually properly resolve these to
                     // see if it is imported from the stdlib
                     "AssertEq" => {
@@ -679,13 +675,13 @@ impl<'alloc> Compiler<'alloc> {
                         self.is_game = true;
                     }
                     _ => {
-                        println!("NAME: {:?}", call.name());
-                        let name_constant = self.alloc_constant_string(call.name());
+                        println!("NAME: {:?}", call.name);
+                        let name_constant = self.alloc_constant_string(call.name);
                         // call.args.iter().for_each(|arg| self.compile_expr(arg));
                         for arg in call.args.iter() {
                             self.compile_expr(arg);
                         }
-                        let name_str: &str = &call.name();
+                        let name_str: &str = &call.name;
                         if !self.functions.contains_key(&name_constant) {
                             panic!("Unknown function name! {:?}", name_str)
                         }
@@ -707,14 +703,14 @@ impl<'alloc> Compiler<'alloc> {
 
     fn alloc_lit(&mut self, lit: &ir::LiteralExpr<'alloc>) -> ConstantTableIdx {
         match lit {
-            ir::LiteralExpr::String(str) => self.alloc_constant_string(str.value.as_str()),
+            ir::LiteralExpr::String(str) => self.alloc_constant_string(str.value),
             ir::LiteralExpr::Boolean(boolean) => self.alloc_constant_bool(boolean.value),
             ir::LiteralExpr::Number(num) => self.alloc_constant_num(num.value),
             ir::LiteralExpr::Object(obj) => self.alloc_constant_object(obj),
         }
     }
 
-    fn compile_num_lit(&mut self, num_lit: &NumberLiteral<'alloc>) -> ConstantTableIdx {
+    fn compile_num_lit(&mut self, num_lit: &NumberLiteral) -> ConstantTableIdx {
         let idx = self.alloc_constant_num(num_lit.value);
         self.push_op_with_constant(Op::Constant, idx);
         idx

@@ -1,6 +1,7 @@
 pub mod common;
 pub mod compile;
 pub mod ir;
+pub mod ir_transform_oxc;
 pub mod op;
 
 pub use common::*;
@@ -61,7 +62,7 @@ pub fn compile<'a>(arena: &'a oxc_allocator::Allocator, source: &str) -> Vec<u8>
         println!("ERRORS: {:?}", result.errors);
     }
 
-    let transform = ir::Transform { arena: &arena };
+    let transform = ir_transform_oxc::Transform { arena: &arena };
     let ir = arena.alloc(transform.transform_oxc(arena.alloc(result.program)));
     let mut compiler = Compiler::new();
     compiler.compile(ir);
