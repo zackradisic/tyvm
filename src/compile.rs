@@ -243,6 +243,13 @@ impl<'alloc> Compiler<'alloc> {
         ConstantIdx(idx.try_into().expect("Constant pool has exceeded ~4gb"))
     }
 
+    fn push_call_native(&mut self, fn_name: ConstantTableIdx, arg_count: u8) {
+        self.cur_fn_mut()
+            .code
+            .push_bytes(Op::CallNative as u8, arg_count);
+        self.cur_fn_mut().code.push_constant(fn_name);
+    }
+
     fn push_op(&mut self, op: Op) {
         self.cur_fn_mut().code.push_op(op)
     }
@@ -537,6 +544,7 @@ impl<'alloc> Compiler<'alloc> {
                 self.compile_num_lit(num_lit);
             }
             ir::Expr::Call(call) => {
+                let count: u8 = call.args.len().try_into().unwrap();
                 match call.name() {
                     "Add" => {
                         assert_eq!(2, call.args.len());
@@ -574,51 +582,53 @@ impl<'alloc> Compiler<'alloc> {
                         self.push_op(Op::Update);
                         return;
                     }
-                    "AssertEq" => {
-                        assert_eq!(2, call.args.len());
-                        call.args.iter().for_each(|arg| self.compile_expr(arg));
-                        self.push_op(Op::AssertEq);
-                        return;
-                    }
                     _ => {}
                 }
 
-                let count: u8 = call.args.len().try_into().unwrap();
                 match call.name() {
                     // TODO: Need to actually properly resolve these to
                     // see if it is imported from the stdlib
+                    "AssertEq" => {
+                        assert_eq!(2, count);
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        let name = self.alloc_constant_string("AssertEq");
+                        self.push_call_native(name, count);
+                    }
                     "Print" => {
                         assert_eq!(count, 1);
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
-                        self.push_op(Op::Print);
+                        let name = self.alloc_constant_string("Print");
+                        self.push_call_native(name, count);
                     }
                     "WriteFile" => {
-                        if count != 2 {
-                            panic!("BAD COUNT")
-                        }
+                        assert_eq!(count, 2);
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
-                        self.push_op(Op::WriteFile);
+                        let name = self.alloc_constant_string("WriteFile");
+                        self.push_call_native(name, count);
                     }
                     "ToTypescriptSource" => {
-                        if count != 2 {
-                            panic!("BAD COUNT")
-                        }
+                        assert_eq!(count, 2);
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
-                        self.push_op(Op::ToTypescriptSource);
+                        let name = self.alloc_constant_string("ToTypescriptSource");
+                        self.push_call_native(name, count);
                     }
                     "ParseInt" => {
-                        if count != 1 {
-                            panic!("BAD COUNT")
-                        }
+                        assert_eq!(count, 1);
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
-                        self.push_op(Op::ParseInt);
+                        let name = self.alloc_constant_string("ParseInt");
+                        self.push_call_native(name, count);
                     }
                     "Panic" => {
-                        if count != 1 {
-                            panic!("BAD COUNT")
-                        }
+                        assert_eq!(count, 1);
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
-                        self.push_op(Op::Panic);
+                        let name = self.alloc_constant_string("Panic");
+                        self.push_call_native(name, count);
+                    }
+                    "RequestAnimFrame" => {
+                        assert_eq!(count, 1);
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        let name = self.alloc_constant_string("RequestAnimFrame");
+                        self.push_call_native(name, count);
                     }
                     _ => {
                         println!("NAME: {:?}", call.name());

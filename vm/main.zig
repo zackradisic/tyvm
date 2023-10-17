@@ -16,7 +16,7 @@ extern fn tyvm_compile(source: Source) Bytecode;
 extern fn tyvm_bytecode_free(bytecode: Bytecode) void;
 
 pub fn main() !void {
-    var file = try std.fs.cwd().openFile("./test/tagged-union.ts", .{});
+    var file = try std.fs.cwd().openFile("./test/flap.ts", .{});
     defer file.close();
     const source_bytes = try file.readToEndAlloc(std.heap.c_allocator, std.math.maxInt(u32));
     defer std.heap.c_allocator.free(source_bytes);

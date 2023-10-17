@@ -18,6 +18,7 @@ call_frames_count: usize = 0,
 
 globals: HashMap(ConstantTableIdx, Value),
 interned_strings: std.StringArrayHashMap(String),
+native_functions: std.StringArrayHashMap(NativeFunction),
 
 /// Constant data loaded from the bytecode
 functions: HashMap(ConstantTableIdx, Function),
@@ -28,16 +29,21 @@ pub fn init(alloc: Allocator, bytecode: []const u8) !VM {
     var vm: VM = .{
         .globals = HashMap(ConstantTableIdx, Value).init(alloc),
         .interned_strings = std.StringArrayHashMap(String).init(alloc),
+        .native_functions = std.StringArrayHashMap(NativeFunction).init(alloc),
+
         .functions = HashMap(ConstantTableIdx, Function).init(alloc),
         .constant_table = undefined,
         .constant_pool = undefined,
     };
 
     try vm.load_bytecode(bytecode);
+    try vm.load_native_functions();
 
-    var iter = vm.functions.valueIterator();
-    while (iter.next()) |function| {
-        function.disassemble(&vm);
+    if (comptime TRACING) {
+        var iter = vm.functions.valueIterator();
+        while (iter.next()) |function| {
+            function.disassemble(&vm);
+        }
     }
 
     return vm;
@@ -77,6 +83,61 @@ fn load_bytecode(self: *VM, bytecode: []const u8) !void {
             const str = self.read_constant_string(entry.idx);
             try self.interned_strings.put(str.as_str(), str);
         }
+    }
+}
+
+fn load_native_functions(self: *VM) !void {
+    const native_fns = [_]NativeFunction{
+        .{
+            .name = "AssertEq",
+            .fn_ptr = NativeFunction.assert_eq_impl,
+            .arg_types = &[_]Value{
+                .Any,
+                .Any
+            }
+        },
+        .{
+            .name = "Print",
+            .fn_ptr = NativeFunction.print_impl,
+            .arg_types = &[_]Value{
+                .Any,
+            }
+        },
+        .{
+            .name = "WriteFile",
+            .fn_ptr = NativeFunction.write_file_impl,
+            .arg_types = &[_]Value{
+                .StringKeyword,
+                .StringKeyword,
+            }
+        },
+        .{
+            .name = "ToTypescriptSource",
+            .fn_ptr = NativeFunction.to_typescript_source_impl,
+            .arg_types = &[_]Value{
+                .StringKeyword,
+                .Any,
+            }
+        },
+        .{
+            .name = "ParseInt",
+            .fn_ptr = NativeFunction.parse_int_impl,
+            .arg_types = &[_]Value{
+                .StringKeyword,
+            }
+        },
+        .{
+            .name = "Panic",
+            .fn_ptr = NativeFunction.panic_impl,
+            .arg_types = &[_]Value{
+                .Any,
+            }
+        },
+    };
+
+    for (native_fns) |native_fn| {
+        const name_str = try self.make_string_from_slice(native_fn.name);
+        try self.native_functions.put(name_str.as_str(), native_fn);
     }
 }
 
@@ -227,17 +288,6 @@ pub fn run(self: *VM) !void {
                 self.call_frames_count -= 1;
                 frame = self.cur_call_frame();
             },
-            .Print => {
-                const val = self.peek(0);
-                if (@as(ValueKind, val) == ValueKind.String) {
-                    print("{s}\n", .{val.String.as_str()});
-                } else {
-                    var buf = std.ArrayListUnmanaged(u8){};
-                    defer buf.deinit(std.heap.c_allocator);
-                    try val.encode_as_string(std.heap.c_allocator, &buf, false);
-                    print("{s}\n", .{buf.items.ptr[0..buf.items.len]});
-                }
-            },
             .FormatString => {
                 const args_count = frame.read_byte();
                 const start = self.stack_top - args_count;
@@ -247,7 +297,7 @@ pub fn run(self: *VM) !void {
                 }
                 str_array.shrinkAndFree(std.heap.c_allocator, str_array.items.len);
                 self.pop_n(args_count);
-                self.push(Value.string(self.make_string_from_slice(str_array.items)));
+                self.push(Value.string(try self.make_string_from_slice(str_array.items)));
             },
             .Negate => {
                 self.push(self.pop().negate());
@@ -283,17 +333,25 @@ pub fn run(self: *VM) !void {
                 const new_object = try self.update_object(std.heap.c_allocator, object.Object, addition.Object);
                 self.push(new_object);
             },
-            .AssertEq => {
-                const b = self.pop();
-                const a = self.pop();
-                if (!self.eq(a, b)) @panic("Not equal");
-            },
             .Union => {
                 const count = frame.read_u8();
                 const args_base = self.stack_top - count;
                 const args = args_base[0..count];
                 const union_val = try self.make_union(std.heap.c_allocator, args);
                 self.push(union_val);
+            },
+            .CallNative => {
+                const arg_count = frame.read_u8();
+                const name_idx = frame.read_constant_idx();
+                const name = self.read_constant(name_idx);
+
+                const args = (self.stack_top - arg_count)[0..arg_count];
+
+                const native_fn = self.native_functions.getPtr(name.String.as_str()) orelse @panic("Unknown native function");
+                const value = try native_fn.call(self, args);
+
+                self.pop_n(arg_count);
+                self.push(value);
             },
             .Exit => return,
             else => { 
@@ -307,6 +365,13 @@ pub fn run(self: *VM) !void {
 fn eq(self: *VM, a: Value, b: Value) bool {
     // Doing very simple thing of checking A extends B and B extends A for equality
     return self.extends(a, b) and self.extends(b, a);
+}
+
+fn call_native(self: *VM, fn_name: ConstantTableIdx, args: []const Value) void {
+    _ = args;
+    _ = fn_name;
+    _ = self;
+
 }
 
 /// Typescript's "extends" is a terrible name, but kept here for consistency's sake.
@@ -536,11 +601,15 @@ fn make_union_impl(self: *VM, alloc: Allocator, potential_variant: Value, existi
     try existing_variants.append(alloc, potential_variant);
 }
 
-fn make_string_from_slice(self: *VM, slice: []const u8) String {
-    return self.interned_strings.get(slice) orelse .{
+fn make_string_from_slice(self: *VM, slice: []const u8) !String {
+    const entry = try self.interned_strings.getOrPut(slice);
+    if (entry.found_existing) return entry.value_ptr.*;
+    const new_string: String = .{
         .len = @intCast(slice.len),
         .ptr = @ptrCast(slice.ptr),
     };
+    entry.value_ptr.* = new_string;
+    return new_string;
 }
 
 fn make_array_spread(self: *VM, count: u32, spread_bitfield: u256) !void {
@@ -901,12 +970,6 @@ const Function = struct {
                     const idx = self.read_constant_table_idx(&i);
                     std.debug.print("{} CallMain {s}\n", .{j, vm.read_constant(idx).String.as_str() });
                 },
-                .ToTypescriptSource => {
-                    std.debug.print("{} ToTypescriptSource\n", .{j});
-                },
-                .WriteFile => {
-                    std.debug.print("{} WriteFile\n", .{j});
-                },
                 .Lte => {
                     std.debug.print("{} LTE\n", .{j});
                 },
@@ -945,9 +1008,6 @@ const Function = struct {
                 .Union => {
                     const count = self.read_u8(&i);
                     std.debug.print("{} Union: {d}\n", .{j, count});
-                },
-                .Print => {
-                    std.debug.print("{} Print\n", .{j});
                 },
                 .Constant => {
                     const idx = self.read_constant_table_idx(&i);
@@ -1036,8 +1096,11 @@ const Function = struct {
                 .Update => {
                     std.debug.print("{} Update\n", .{j});
                 },
-                .AssertEq => {
-                    std.debug.print("{} AssertEq\n", .{j});
+                .CallNative => {
+                    const count = self.read_u8(&i);
+                    const name_idx = self.read_constant_table_idx(&i);
+                    const str = vm.read_constant(name_idx);
+                    std.debug.print("{} CallNative {s} {d}\n", .{j, str.String.as_str(), count});
                 },
                 else => { 
                     print("UNHANDLED: {s}\n", .{ @tagName(op) });
@@ -1084,6 +1147,73 @@ const Function = struct {
     // }
 };
 
+const NativeFunction = struct {
+    name: []const u8,
+    fn_ptr: *const fn (vm: *VM, []const Value) anyerror!Value,
+    arg_types: ?[]const Value,
+
+    pub fn call(self: *const NativeFunction, vm: *VM, args: []const Value) !Value {
+        if (self.arg_types) |check_args| {
+            if (check_args.len != args.len) @panic("Invalid args");
+            for (check_args, args) |check_arg, arg| {
+                if (!vm.extends(arg, check_arg)) @panic("Arg a does not extend arg b");
+            }
+        }
+        return try self.fn_ptr(vm, args);
+    }
+
+    pub fn assert_eq_impl(vm: *VM, args: []const Value) !Value {
+        if (!vm.eq(args[0], args[1])) @panic("Not equal");
+        return .Undefined;
+    }
+
+    pub fn print_impl(vm: *VM, args: []const Value) !Value {
+        _ = vm;
+        const val = args[0];
+        if (@as(ValueKind, val) == ValueKind.String) {
+            print("{s}\n", .{val.String.as_str()});
+        } else {
+            var buf = std.ArrayListUnmanaged(u8){};
+            defer buf.deinit(std.heap.c_allocator);
+            try val.encode_as_string(std.heap.c_allocator, &buf, false);
+            print("{s}\n", .{buf.items.ptr[0..buf.items.len]});
+        }
+        return args[0];
+    }
+
+    pub fn write_file_impl(vm: *VM, args: []const Value) !Value {
+        _ = args;
+        _ = vm;
+        @panic("Unimplemented: WriteFile<...>");
+    }
+
+    pub fn to_typescript_source_impl(vm: *VM, args: []const Value) !Value {
+        _ = args;
+        _ = vm;
+        @panic("Unimplemented: ToTypescriptSource<...>");
+    }
+
+    pub fn parse_int_impl(vm: *VM, args: []const Value) !Value {
+        _ = args;
+        _ = vm;
+        @panic("Unimplemented: ParseInt<...>");
+    }
+
+    pub fn panic_impl(vm: *VM, args: []const Value) !Value {
+        _ = vm;
+        const val = args[0];
+        if (@as(ValueKind, val) == ValueKind.String) {
+            print("{s}\n", .{val.String.as_str()});
+        } else {
+            var buf = std.ArrayListUnmanaged(u8){};
+            defer buf.deinit(std.heap.c_allocator);
+            try val.encode_as_string(std.heap.c_allocator, &buf, false);
+            print("{s}\n", .{buf.items.ptr[0..buf.items.len]});
+        }
+        @panic("");
+    }
+};
+
 const Op = enum(u8) {
     // 2 stack operands
     Add = 0,
@@ -1093,19 +1223,12 @@ const Op = enum(u8) {
     Lte,
     Intersect,
     Union,
-
-    // 1 instruction operand + N stack operands
-    Print,
-
-    // 1 instruction operand
     Constant,
-
     Pop,
-    // N stack operands (args) + 1 stack operand (fn ident) + 1 instr for count
     Call,
     TailCall,
     CallMain,
-    // 2 args, 2 jump instrs
+    CallNative,
     Extends,
     ExtendsNoPopLeft,
     PanicExtends,
@@ -1115,7 +1238,6 @@ const Op = enum(u8) {
     String,
     Object,
     PopCallFrame,
-    // next instr is fields
     MakeObj,
     EmptyTuple,
     MakeArray,
@@ -1125,9 +1247,6 @@ const Op = enum(u8) {
     Index,
     IndexLit,
 
-    WriteFile,
-    ToTypescriptSource,
-    ParseInt,
     Panic,
 
     SetLocal,
@@ -1141,8 +1260,6 @@ const Op = enum(u8) {
 
     Negate,
     Update,
-
-    AssertEq,
 
     Exit,
 };

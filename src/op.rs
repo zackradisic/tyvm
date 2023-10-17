@@ -7,19 +7,14 @@ pub enum Op {
     Mul,
     Eq,
     Lte,
-    // 2 stack operands
     Intersect,
     Union,
-    // N stack operands
-    Print,
-    // 1 instr operand
     Constant,
     Pop,
-    // N stack operands (args) + 1 stack operand (fn ident) + 1 instr for count
     Call,
     TailCall,
     CallMain,
-    // 2 args, 2 jump instrs
+    CallNative,
     Extends,
     ExtendsNoPopLeft,
     PanicExtends,
@@ -29,7 +24,6 @@ pub enum Op {
     String,
     Object,
     PopCallFrame,
-    // next instr is fields
     MakeObj,
     EmptyTuple,
     MakeArray,
@@ -39,9 +33,6 @@ pub enum Op {
     Index,
     IndexLit,
 
-    WriteFile,
-    ToTypescriptSource,
-    ParseInt,
     Panic,
 
     SetLocal,
@@ -55,8 +46,6 @@ pub enum Op {
 
     Negate,
     Update,
-
-    AssertEq,
 
     Exit,
 }

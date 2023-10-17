@@ -258,3 +258,5 @@ type discriminatedUnionEdgeCase4 =
   | { foo: "bar" };
 
 function someFunc4(x: discriminatedUnionEdgeCase4) {}
+
+type foo = "hihihi" | "hi";
