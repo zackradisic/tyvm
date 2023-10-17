@@ -108,11 +108,6 @@ namespace objectUnionExtends {
 
   type r6 = Extends<{ foo: 1 | 2; bar: "hi" | "hello"; lmao: "hi" }, g>;
 
-  // type Shape = |
-  // { type: 'circle', radius: number } |
-  // { type: 'square', side: number } |
-  // { type: 'rectangle', side: string, height: number }
-
   type Shape = { type: "circle" } | { type: "square" } | { type: "rectangle" };
 
   type r7 = Extends<{ type: "circle" | "square" }, Shape>;
@@ -260,3 +255,9 @@ type discriminatedUnionEdgeCase4 =
 function someFunc4(x: discriminatedUnionEdgeCase4) {}
 
 type foo = "hihihi" | "hi";
+
+type Shape2 =
+  | { type: "circle"; radius: number; metadata: string }
+  | { type: "square"; side: number; metadata: string }
+  | { type: "rectangle"; side: string; height: number; metadata: number };
+type shapeTest<T extends Shape2> = T["type"] extends "circle" ? T[""] : void;

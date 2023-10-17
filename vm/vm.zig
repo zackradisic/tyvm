@@ -375,8 +375,12 @@ fn call_native(self: *VM, fn_name: ConstantTableIdx, args: []const Value) void {
 }
 
 /// Typescript's "extends" is a terrible name, but kept here for consistency's sake.
-/// A better term is "subtype". First think of types as sets. For example, `string` is a set of every possible string type: "foo", "bar", "sldsad", and so on
-/// When we say `A subtypes B`, we are actually saying `A is a subset of B`. For example: "foo" subtypes `string`.
+/// A better term is "subtype". First think of types as sets. For example,
+/// `string` is a set of every possible string type: "foo", "bar", "sldsad", and
+/// so on. 
+/// 
+/// When we say `A subtypes B`, we are actually saying `A is a subset of
+/// B`. For example: "foo" subtypes `string`.
 fn extends(self: *VM, a: Value, b: Value) bool {
     if (b == .Any or a == .Any) return true;
     if (b == .Undefined) return a == .Undefined;
@@ -397,6 +401,8 @@ fn extends(self: *VM, a: Value, b: Value) bool {
     if (@as(ValueKind, b) == .Array) return @as(ValueKind, a) == .Array and self.extends_array(a.Array, b.Array);
     if (@as(ValueKind, b) == .Object) return @as(ValueKind, a) == .Object and self.extends_object(a.Object, b.Object); 
 
+    // TODO: Discriminant unions have slightly different subtyping logic that
+    // need to be supported. 
     if (@as(ValueKind, b) == .Union) return self.extends_any_of(a, b.Union.variants_slice());
     if (@as(ValueKind, a) == .Union) return self.extends_many_all(a.Union.variants_slice(), b);
 
@@ -423,6 +429,7 @@ fn extends_object(self: *VM, a: Object, b: Object) bool {
 fn extends_array(self: *VM, a: Array, b: Array) bool {
     // Empty tuple
     if (b.len == 0) return a.len == 0;
+
     // `b` is an `Array<T>`, so either:
     // 1. `a` is an empty tuple [] which extends any Array<T> 
     // 2. `a` is either a tuple or regular Array<T>, in either case
@@ -476,6 +483,21 @@ fn index_value(self: *VM, object: Value, index: Value) Value {
             _ = str;
             if (@as(ValueKind, index) == ValueKind.Number) return .StringKeyword;
             // TODO: 
+            unreachable;
+        },
+        .Union => |uni| {
+            _ = uni;
+            // TODO: Only properties available to all variants can be indexed
+            // If the value of the property differs among variants, then the
+            // result of indexing it is a union of all possible values:
+            // ```typescript
+            // type Union = { type: 'foo', data: string } | { type: 'bar', data: number }
+            //
+            // 
+            // type result = Union['type']  // 'foo' | 'bar'
+            // type result2 = Union['data'] // string | number
+            // ```
+            // 
             unreachable;
         },
         else => return .Any,
@@ -534,7 +556,7 @@ fn make_union(self: *VM, alloc: Allocator, variants: []const Value) !Value {
     // 3. The value of this discriminant key must be a literal
     // 4. There can only be one discriminant key/value pair
 
-    // Check 1
+    // Check 1: Every variant must be an object
     const all_objects = all_objects: {
         for (variants_list.items) |variant| {
             if (@as(ValueKind, variant) != .Object) break :all_objects false;
