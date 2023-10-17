@@ -15,67 +15,92 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe = b.addExecutable(.{
-        .name = "tyvm",
-        // In this case the main source file is merely a path, however, in more
-        // complicated build scripts, this could be a generated file.
-        .root_source_file = .{ .path = "vm/main.zig" },
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
+    const is_wasm = target.cpu_arch != null and target.cpu_arch.?.isWasm();
 
-    exe.linkSystemLibrary("tyvm_compiler");
-    exe.addIncludePath(.{ .path = "./include" });
-    if (target.cpu_arch != null and target.cpu_arch.?.isWasm()) {
+    const out = exe: {
+        if (is_wasm) {
+            var lib = b.addExecutable(.{
+                .name = "tyvm",
+                .root_source_file = .{ .path = "vm/main_wasm.zig" },
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            });
+            lib.export_symbol_names = &.{
+                "init",
+                "get_function",
+                "get_global_function",
+                "run",
+                "alloc",
+                "dealloc", 
+                "is_game",
+                "jump"
+            };
+            break :exe lib;
+        }
+        const exe = b.addExecutable(.{
+            .name = "tyvm",
+            .root_source_file = .{ .path = "vm/main.zig" },
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        break :exe exe;
+    };
+
+    out.linkSystemLibrary("tyvm_compiler");
+    out.addIncludePath(.{ .path = "./include" });
+    if (is_wasm) {
         if (optimize == .Debug) {
-            exe.addLibraryPath(.{ .path = "./target/wasm32-wasi/debug"});
+            out.addLibraryPath(.{ .path = "./target/wasm32-wasi/debug"});
         } else {
-            exe.addLibraryPath(.{ .path = "./target/wasm32-wasi/release"});
+            out.addLibraryPath(.{ .path = "./target/wasm32-wasi/release"});
         }
     } else {
         if (optimize == .Debug) {
-            exe.addLibraryPath(.{ .path = "./target/debug"});
+            out.addLibraryPath(.{ .path = "./target/debug"});
         } else {
-            exe.addLibraryPath(.{ .path = "./target/release"});
+            out.addLibraryPath(.{ .path = "./target/release"});
         }
     }
 
-    // const ENABLE_DEBUG_SYMBOLS = true;
-    // if (comptime ENABLE_DEBUG_SYMBOLS) {
-    //     exe.dll_export_fns = true;
-    //     exe.strip = false;
-    //     exe.export_table = true;
-    //     exe.linkLibC();
-    // }
+    const ENABLE_DEBUG_SYMBOLS = true;
+    if (comptime ENABLE_DEBUG_SYMBOLS) {
+        out.dll_export_fns = true;
+        out.strip = false;
+        out.export_table = true;
+        out.linkLibC();
+    }
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
     // step when running `zig build`).
-    b.installArtifact(exe);
+    b.installArtifact(out);
 
-    // This *creates* a Run step in the build graph, to be executed when another
-    // step is evaluated that depends on it. The next line below will establish
-    // such a dependency.
-    const run_cmd = b.addRunArtifact(exe);
+    if (!is_wasm) {
+        // This *creates* a Run step in the build graph, to be executed when another
+        // step is evaluated that depends on it. The next line below will establish
+        // such a dependency.
+        const run_cmd = b.addRunArtifact(out);
 
-    // By making the run step depend on the install step, it will be run from the
-    // installation directory rather than directly from within the cache directory.
-    // This is not necessary, however, if the application depends on other installed
-    // files, this ensures they will be present and in the expected location.
-    run_cmd.step.dependOn(b.getInstallStep());
+        // By making the run step depend on the install step, it will be run from the
+        // installation directory rather than directly from within the cache directory.
+        // This is not necessary, however, if the application depends on other installed
+        // files, this ensures they will be present and in the expected location.
+        run_cmd.step.dependOn(b.getInstallStep());
 
-    // This allows the user to pass arguments to the application in the build
-    // command itself, like this: `zig build run -- arg1 arg2 etc`
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
+        // This allows the user to pass arguments to the application in the build
+        // command itself, like this: `zig build run -- arg1 arg2 etc`
+        if (b.args) |args| {
+            run_cmd.addArgs(args);
+        }
+
+        // This creates a build step. It will be visible in the `zig build --help` menu,
+        // and can be selected like this: `zig build run`
+        // This will evaluate the `run` step rather than the default, which is "install".
+        const run_step = b.step("run", "Run the app");
+        run_step.dependOn(&run_cmd.step);
     }
-
-    // This creates a build step. It will be visible in the `zig build --help` menu,
-    // and can be selected like this: `zig build run`
-    // This will evaluate the `run` step rather than the default, which is "install".
-    const run_step = b.step("run", "Run the app");
-    run_step.dependOn(&run_cmd.step);
 
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.

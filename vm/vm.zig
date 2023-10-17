@@ -1,4 +1,5 @@
 const std = @import("std");
+const raf = @import("raf.zig");
 
 const print = std.debug.print;
 
@@ -8,7 +9,8 @@ const Allocator = std.mem.Allocator;
 
 const VM = @This();
 
-const TRACING: bool = true;
+// const TRACING: bool = true;
+const TRACING: bool = false;
 
 stack: [1024]Value = [_]Value{.{.Number = 0.0}} ** 1024,
 stack_top: [*]Value = undefined,
@@ -17,6 +19,7 @@ call_frames: [1024]CallFrame = [_]CallFrame{CallFrame.uninit()} ** 1024,
 call_frames_count: usize = 0,
 
 globals: HashMap(ConstantTableIdx, Value),
+constant_strings: std.StringArrayHashMap(ConstantTableIdx),
 interned_strings: std.StringArrayHashMap(String),
 native_functions: std.StringArrayHashMap(NativeFunction),
 
@@ -24,10 +27,13 @@ native_functions: std.StringArrayHashMap(NativeFunction),
 functions: HashMap(ConstantTableIdx, Function),
 constant_table: []const ConstantTableEntry align(8),
 constant_pool: []const u8 align(8),
+is_game: bool = false,
+initial_state_index: ?ConstantTableIdx = null,
 
-pub fn init(alloc: Allocator, bytecode: []const u8) !VM {
+pub fn new(alloc: Allocator, bytecode: []const u8) !VM {
     var vm: VM = .{
         .globals = HashMap(ConstantTableIdx, Value).init(alloc),
+        .constant_strings = std.StringArrayHashMap(ConstantTableIdx).init(alloc),
         .interned_strings = std.StringArrayHashMap(String).init(alloc),
         .native_functions = std.StringArrayHashMap(NativeFunction).init(alloc),
 
@@ -43,6 +49,7 @@ pub fn init(alloc: Allocator, bytecode: []const u8) !VM {
         var iter = vm.functions.valueIterator();
         while (iter.next()) |function| {
             function.disassemble(&vm);
+            print("\n", .{});
         }
     }
 
@@ -74,14 +81,18 @@ fn load_bytecode(self: *VM, bytecode: []const u8) !void {
         try self.functions.put(entry.name_constant_idx, function);
     }
     
+    self.is_game = header.is_game == 1;
     self.constant_pool = constant_pool;
     self.constant_table = constant_table;
 
     for (self.constant_table, 0..) |entry, i| {
-        _ = i;
         if (entry.kind == .String) {
             const str = self.read_constant_string(entry.idx);
+            if (self.is_game and std.mem.eql(u8, str.as_str(), "InitialState")) {
+                self.initial_state_index = ConstantTableIdx.new(@intCast(i));
+            }
             try self.interned_strings.put(str.as_str(), str);
+            try self.constant_strings.put(str.as_str(), ConstantTableIdx.new(@intCast(i)));
         }
     }
 }
@@ -133,6 +144,13 @@ fn load_native_functions(self: *VM) !void {
                 .Any,
             }
         },
+        .{
+            .name = "RequestAnimFrame",
+            .fn_ptr = NativeFunction.request_anim_frame_impl,
+            .arg_types = &[_]Value{
+                .Any,
+            }
+        },
     };
 
     for (native_fns) |native_fn| {
@@ -141,14 +159,30 @@ fn load_native_functions(self: *VM) !void {
     }
 }
 
-pub fn run(self: *VM) !void {
+pub fn get_function(self: *VM, name: []const u8) ?*const Function {
+    const table_idx = self.constant_strings.get(name) orelse return null;
+    const function = self.functions.getPtr(table_idx) orelse return null;
+    return function;
+}
+
+pub fn get_global_function(self: *VM) *const Function {
+    return self.functions.getPtr(ConstantTableIdx.new(0)).?;
+}
+
+pub fn get_main_function(self: *VM) ?*const Function {
+    return self.functions.getPtr(ConstantTableIdx.new(1));
+}
+
+pub fn init(self: *VM) !void {
+    self.stack_top = self.stack[0..];
+}
+
+pub fn run(self: *VM, function: *const Function) !void {
     self.stack_top = self.stack[0..];
 
-    const global_fn: *const Function = self.functions.getPtr(ConstantTableIdx.new(0)).?;
-
     self.push_call_frame(.{
-        .func = global_fn,
-        .ip = global_fn.code.ptr,
+        .func = function,
+        .ip = function.code.ptr,
         .slots = self.stack_top,
     });
 
@@ -157,6 +191,7 @@ pub fn run(self: *VM) !void {
     while (true) {
         const op: Op = @enumFromInt(frame.read_byte());
         if (comptime TRACING) {
+            print("FUNCTION NAME IDX: {d}\n", .{self.cur_call_frame().func.name.v});
             const fn_name = self.read_constant(self.cur_call_frame().func.name).String;
             print("STACK:\n", .{});
             const stack_top_int: usize = @intFromPtr(self.stack_top);
@@ -184,6 +219,11 @@ pub fn run(self: *VM) !void {
                 const a = self.pop();
                 self.push(Value.number(a.Number * b.Number));
             },
+            .Div => {
+                const b = self.pop();
+                const a = self.pop();
+                self.push(Value.number(a.Number / b.Number));
+            },
             .Eq => {
                 const b = self.pop();
                 const a = self.pop();
@@ -193,6 +233,11 @@ pub fn run(self: *VM) !void {
                 const b = self.pop();
                 const a = self.pop();
                 self.push(Value.boolean(a.Number <= b.Number));
+            },
+            .Gte => {
+                const b = self.pop();
+                const a = self.pop();
+                self.push(Value.boolean(a.Number >= b.Number));
             },
             .CallMain => {
                 const main_name = frame.read_constant_idx();
@@ -276,15 +321,23 @@ pub fn run(self: *VM) !void {
                 const value = self.pop();
                 try self.globals.put(constant_idx, value);
             },
+            .SetInitialState => {
+                const constant_idx = frame.read_constant_idx();
+                const value = self.pop();
+                if (self.globals.contains(constant_idx)) continue;
+                try self.globals.put(constant_idx, value);
+            },
             .Jump => {
                 const offset = frame.read_u16();
                 frame.ip = @ptrCast(&frame.func.code[offset]);
             },
             .PopCallFrame => {
+                // Set the value at the top of the stack on the return slot
                 const return_val = self.peek(0);
                 const return_slot = frame.slots;
                 return_slot[0] = return_val;
                 self.stack_top = return_slot + 1;
+
                 self.call_frames_count -= 1;
                 frame = self.cur_call_frame();
             },
@@ -353,7 +406,10 @@ pub fn run(self: *VM) !void {
                 self.pop_n(arg_count);
                 self.push(value);
             },
-            .Exit => return,
+            .Exit => { 
+                self.call_frames_count -= 1;
+                return;
+            },
             else => { 
                 print("Unhandled op name: {s}\n", .{@tagName(op)});
                 @panic("Unhandled op.");
@@ -382,7 +438,9 @@ fn call_native(self: *VM, fn_name: ConstantTableIdx, args: []const Value) void {
 /// When we say `A subtypes B`, we are actually saying `A is a subset of
 /// B`. For example: "foo" subtypes `string`.
 fn extends(self: *VM, a: Value, b: Value) bool {
-    if (b == .Any or a == .Any) return true;
+    if (b == .Any or a == .Any) { 
+        return true; 
+    }
     if (b == .Undefined) return a == .Undefined;
     if (b == .NumberKeyword) return @as(ValueKind, a) == ValueKind.Number or @as(ValueKind, a) == ValueKind.NumberKeyword;
     if (b == .BoolKeyword) return @as(ValueKind, a) == ValueKind.Bool or @as(ValueKind, a) == ValueKind.BoolKeyword;
@@ -506,15 +564,38 @@ fn index_value(self: *VM, object: Value, index: Value) Value {
 
 fn update_object(self: *VM, alloc: Allocator, base: Object, additional: Object) !Value {
     _ = self;
-    var new_fields = try alloc.alloc(Object.Field, base.len + additional.len);
-    if (base.len > 0) @memcpy(new_fields[0..base.len], base.fields_slice());
-    if (additional.len > 0) @memcpy(new_fields[base.len..base.len + additional.len], additional.fields_slice());
+    if (base.len == 0 and additional.len == 0) @panic("TODO: Empty object");
 
-    std.sort.block(Object.Field, new_fields, {}, Object.Field.less_than_key);
+    var actual_len: usize = base.len + additional.len;
+    var new_fields = try alloc.alloc(Object.Field, actual_len);
+    if (base.len == 0) {
+        @memcpy(new_fields[0..additional.len], additional.fields_slice());
+    } else if (additional.len == 0) {
+        @memcpy(new_fields[0..base.len], base.fields_slice());
+    } else {
+        @memcpy(new_fields[0..base.len], base.fields_slice());
+        var i: u32 = base.len;
+        for (additional.fields_slice()) |update_field| {
+            const dummy_field: Object.Field = .{
+                .name = update_field.name,
+                .value = .Any,
+            };
+            if (binary_search(Object.Field, new_fields, &dummy_field, Object.Field.cmp_key)) |idx| {
+                new_fields[idx] = update_field;
+                continue;
+            }
+            new_fields[i] = update_field;
+            i += 1;
+        }
+
+        actual_len = i;
+    }
+    var actual_new_fields = new_fields[0..actual_len];
+    std.sort.block(Object.Field, actual_new_fields, {}, Object.Field.less_than_key);
 
     var object: Object = .{
-        .fields = new_fields.ptr,
-        .len = base.len + additional.len
+        .fields = actual_new_fields.ptr,
+        .len = @intCast(actual_len),
     };
 
     object.panic_on_duplicate_keys();
@@ -623,7 +704,7 @@ fn make_union_impl(self: *VM, alloc: Allocator, potential_variant: Value, existi
     try existing_variants.append(alloc, potential_variant);
 }
 
-fn make_string_from_slice(self: *VM, slice: []const u8) !String {
+pub fn make_string_from_slice(self: *VM, slice: []const u8) !String {
     const entry = try self.interned_strings.getOrPut(slice);
     if (entry.found_existing) return entry.value_ptr.*;
     const new_string: String = .{
@@ -727,6 +808,7 @@ fn make_array(self: *VM, comptime is_tuple: bool, count: u32) !void {
 
 fn call_main(self: *VM, main_name: ConstantTableIdx) !void {
     const count = 1;
+    self.push(.Any);
     // TODO: read args from stdout
     try self.make_array(true, count);
     std.debug.assert(
@@ -845,6 +927,7 @@ const Bytecode = struct {
         magic: u32 align(8),
         constants_offset: u32,
         functions_offset: u32,
+        is_game: u32,
     };
 
     const ConstantsHeader = extern struct {
@@ -948,7 +1031,7 @@ const CallFrame = struct {
     }
 };
 
-const Function = struct {
+pub const Function = struct {
     name: ConstantTableIdx,
     code: []const u8,
 
@@ -993,7 +1076,10 @@ const Function = struct {
                     std.debug.print("{} CallMain {s}\n", .{j, vm.read_constant(idx).String.as_str() });
                 },
                 .Lte => {
-                    std.debug.print("{} LTE\n", .{j});
+                    std.debug.print("{} Lte\n", .{j});
+                },
+                .Gte => {
+                    std.debug.print("{} Gte\n", .{j});
                 },
                 .Eq => {
                     std.debug.print("{} EQ\n", .{j});
@@ -1021,6 +1107,9 @@ const Function = struct {
                 },
                 .Mul => {
                     std.debug.print("{} Mul\n", .{j});
+                },
+                .Div => {
+                    std.debug.print("{} Div\n", .{j});
                 },
                 .Intersect => {
                     const count = self.code[i];
@@ -1058,9 +1147,13 @@ const Function = struct {
                     const idx = self.read_constant_table_idx(&i);
                     std.debug.print("{} SET GLOBAL {s}\n", .{j, vm.read_constant(idx).String.as_str()});
                 },
+                .SetInitialState => {
+                    const idx = self.read_constant_table_idx(&i);
+                    std.debug.print("{} SetInitialState {s}\n", .{j, vm.read_constant(idx).String.as_str()});
+                },
                 .GetGlobal => {
                     const idx = self.read_constant_table_idx(&i);
-                    std.debug.print("{} GET GLOBAL {?}\n", .{j, vm.read_constant(idx)});
+                    std.debug.print("{} GET GLOBAL {s}\n", .{j, vm.read_constant(idx).String.as_str()});
                 },
                 .PanicExtends => {
                     std.debug.print("{} PanicExtends\n", .{j});
@@ -1172,14 +1265,12 @@ const Function = struct {
 const NativeFunction = struct {
     name: []const u8,
     fn_ptr: *const fn (vm: *VM, []const Value) anyerror!Value,
-    arg_types: ?[]const Value,
+    arg_types: []const Value,
 
     pub fn call(self: *const NativeFunction, vm: *VM, args: []const Value) !Value {
-        if (self.arg_types) |check_args| {
-            if (check_args.len != args.len) @panic("Invalid args");
-            for (check_args, args) |check_arg, arg| {
-                if (!vm.extends(arg, check_arg)) @panic("Arg a does not extend arg b");
-            }
+        if (self.arg_types.len != args.len) @panic("Invalid args");
+        for (self.arg_types, args) |check_arg, arg| {
+            if (!vm.extends(arg, check_arg)) @panic("Arg a does not extend arg b");
         }
         return try self.fn_ptr(vm, args);
     }
@@ -1234,6 +1325,22 @@ const NativeFunction = struct {
         }
         @panic("");
     }
+
+    pub fn request_anim_frame_impl(vm: *VM, args: []const Value) !Value {
+        const arg = args[0];
+        const drawCommandsString = vm.interned_strings.get("drawCommands").?;
+        const drawCommandsField = arg.Object.get_field(drawCommandsString).?;
+        const drawCommandsValue = drawCommandsField.value;
+
+        var buf = std.ArrayListUnmanaged(u8){};
+        // defer buf.deinit(std.heap.c_allocator);
+        try vm.globals.put(vm.initial_state_index.?, arg);
+        try drawCommandsValue.serialize_to_json(std.heap.c_allocator, &buf);
+        
+        raf.request_anim_frame(buf.items.ptr, buf.items.len, buf.capacity);
+
+        return Value.Any;
+    }
 };
 
 const Op = enum(u8) {
@@ -1241,8 +1348,10 @@ const Op = enum(u8) {
     Add = 0,
     Sub,
     Mul,
+    Div,
     Eq,
     Lte,
+    Gte,
     Intersect,
     Union,
     Constant,
@@ -1275,6 +1384,7 @@ const Op = enum(u8) {
     GetLocal,
     SetGlobal,
     GetGlobal,
+    SetInitialState,
 
     FormatString,
     Any,
@@ -1308,7 +1418,7 @@ const Literal = union(enum) {
     String: String,
 };
 
-const Value = union(ValueKind){
+pub const Value = union(ValueKind){
     Any,
     Undefined,
     NumberKeyword,
@@ -1361,7 +1471,7 @@ const Value = union(ValueKind){
         return .{ .Number = value };
     }
 
-    fn boolean(value: bool) Value {
+    pub fn boolean(value: bool) Value {
         return .{ .Bool = value };
     }
 
@@ -1373,6 +1483,85 @@ const Value = union(ValueKind){
         var buf = std.ArrayListUnmanaged(u8){};
         try self.encode_as_string(alloc, &buf, true);
         print("{s}: {s}\n", .{str, buf.items.ptr[0..buf.items.len]});
+    }
+
+    fn serialize_to_json(self: Value, alloc: Allocator, buf: *std.ArrayListUnmanaged(u8)) !void {
+        switch (self) {
+            .Any => {
+                try write_str_expand(alloc, buf, "{{\"type\": \"keyword\",\"value\":\"any\"}}", .{});
+            },
+            .Undefined => {
+                try write_str_expand(alloc, buf, "{{\"type\": \"keyword\",\"value\":\"undefined\"}}", .{});
+            },
+            .NumberKeyword => {
+                try write_str_expand(alloc, buf, "{{\"type\": \"keyword\",\"value\":\"number\"}}", .{});
+            }, 
+            .BoolKeyword => {
+                try write_str_expand(alloc, buf, "{{\"type\": \"keyword\",\"value\":\"boolean\"}}", .{});
+            }, 
+            .StringKeyword => {
+                try write_str_expand(alloc, buf, "{{\"type\": \"keyword\",\"value\":\"string\"}}", .{});
+            },
+            .ObjectKeyword => {
+                try write_str_expand(alloc, buf, "{{\"type\": \"keyword\",\"value\":\"object\"}}", .{});
+            },
+            .String => |v|{
+                var str_buf = std.ArrayList(u8).init(alloc);
+                defer str_buf.deinit();
+                try write_str_expand(alloc, buf, "\"{s}\"", .{try json_escaped(v.as_str(), &str_buf)});
+            },
+            .Bool => |v| {
+                if (v) {
+                    try write_str_expand(alloc, buf, "true", .{});
+                } else {
+                    try write_str_expand(alloc, buf, "false", .{});
+                }
+            },
+            .Number => |v| {
+                try write_str_expand(alloc, buf, "{d}", .{v});
+            },
+            .Object => |v| {
+                try write_str_expand(alloc, buf, "{{\n", .{});
+                if (v.fields) |fields| {
+                    const last = v.len -| 1;
+                    for (fields[0..v.len], 0..) |field_, i| {
+                        const field: Object.Field = field_;
+                        try write_str_expand(alloc, buf, "    ", .{});
+                        try Value.string(field.name).serialize_to_json(alloc, buf);
+                        try write_str_expand(alloc, buf, ": ", .{});
+                        try field.value.serialize_to_json(alloc, buf);
+                        if (i != last) try write_str_expand(alloc, buf, ",\n", .{});
+                    }
+                }
+                try write_str_expand(alloc, buf, "\n}}\n", .{});
+            },
+            .Array => |v| {
+                if (v.is_tuple_array()) {
+                    try write_str_expand(alloc, buf, "[", .{});
+                    if (v.ptr) |ptr| {
+                        const last = v.len -| 1;
+                        for (ptr[0..v.len], 0..) |val, i| {
+                            try val.serialize_to_json(alloc, buf);
+                            if (i != last) try write_str_expand(alloc, buf, ", ", .{});
+                        }
+                    }
+                    try write_str_expand(alloc, buf, "]", .{});
+                } else {
+                    try write_str_expand(alloc, buf, "Array<", .{});
+                    try write_str_expand(alloc, buf, ">", .{});
+                }
+            },
+            .Union => |v| {
+                const last = v.len -| 1;
+                for (v.variants[0..v.len], 0..) |variant, i| {
+                    try variant.serialize_to_json(alloc, buf);
+                    if (i != last) {
+                        try write_str_expand(alloc, buf, " | ", .{});
+                    } 
+                }
+            }
+        }
+
     }
 
     fn encode_as_string(self: Value, alloc: Allocator, buf: *std.ArrayListUnmanaged(u8), format: bool) !void {
@@ -1428,7 +1617,11 @@ const Value = union(ValueKind){
                 try write_str_expand(alloc, buf, "\n}}\n", .{});
             },
             .Array => |v| {
-                try write_str_expand(alloc, buf, "[", .{});
+                if (v.is_tuple_array()) {
+                    try write_str_expand(alloc, buf, "[", .{});
+                } else {
+                    try write_str_expand(alloc, buf, "Array<", .{});
+                }
                 if (v.ptr) |ptr| {
                     const last = v.len -| 1;
                     for (ptr[0..v.len], 0..) |val, i| {
@@ -1436,7 +1629,11 @@ const Value = union(ValueKind){
                         if (i != last) try write_str_expand(alloc, buf, ", ", .{});
                     }
                 }
-                try write_str_expand(alloc, buf, "]\n", .{});
+                if (v.is_tuple_array()) {
+                    try write_str_expand(alloc, buf, "]", .{});
+                } else {
+                    try write_str_expand(alloc, buf, ">", .{});
+                }
             },
             .Union => |v| {
                 const last = v.len -| 1;
@@ -1538,7 +1735,7 @@ const Array = struct {
 /// INVARIANTS:
 /// - `fields` are ordered lexographically by key
 const Object = struct { 
-    fields: ?[*]const Field,
+    fields: ?[*]Field,
     len: u32,
 
     const Field = struct {
@@ -1563,7 +1760,10 @@ const Object = struct {
         var i: usize = 0;
         var j: usize = 1;
         while (j < self.len) {
-            if (fields[i].name.ptr == fields[j].name.ptr) @panic("Duplicate keys!");
+            if (fields[i].name.ptr == fields[j].name.ptr) { 
+                print("{d}: {s} == {d}: {s}\n", .{i, fields[i].name.as_str(), j, fields[j].name.as_str()});
+                @panic("Duplicate keys!");
+            }
             i += 1;
             j += 1;
         }
@@ -1608,6 +1808,18 @@ const Object = struct {
         }
         return null;
     }
+
+    pub fn update_field(self: *Object, name: String, new_value: Value) void {
+        const dummy_field = .{
+            .name = name,
+            .value = Value.number(0),
+        };
+        if (self.fields) |fields| {
+            const idx = binary_search(Object.Field, fields[0..self.len], &dummy_field, Object.Field.cmp_key) orelse return;
+            fields[idx].value = new_value;
+        }
+        return;
+    }
 };
 
 /// INVARIANTS:
@@ -1651,6 +1863,38 @@ pub fn binary_search(comptime T: type, arr: []const T, search_elem: *const T, co
     }
 
     return null;
+}
+
+pub fn json_escaped(str: []const u8, buf: *std.ArrayList(u8)) ![]const u8 {
+    for (str) |ch| {
+        switch (ch) {
+            '"' => {
+                try buf.appendSlice("\\\"");
+            },
+            '\\' => {
+                try buf.appendSlice("\\\\");
+            },
+            // '\b' => {
+            //     try buf.appendSlice("\\b");
+            // },
+            // '\f' => {
+            //     try buf.appendSlice("\\f");
+            // },
+            '\n' => {
+                try buf.appendSlice("\\n");
+            },
+            '\r' => {
+                try buf.appendSlice("\\r");
+            },
+            '\t' => {
+                try buf.appendSlice("\\t");
+            },
+            else => {
+                try buf.append(ch);
+            },
+        }
+    }
+    return buf.items[0..buf.items.len];
 }
 
 test "count spread" {

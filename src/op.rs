@@ -5,8 +5,10 @@ pub enum Op {
     Add = 0,
     Sub,
     Mul,
+    Div,
     Eq,
     Lte,
+    Gte,
     Intersect,
     Union,
     Constant,
@@ -39,6 +41,7 @@ pub enum Op {
     GetLocal,
     SetGlobal,
     GetGlobal,
+    SetInitialState,
 
     FormatString,
     Any,

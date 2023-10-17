@@ -2,6 +2,7 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::mem::size_of;
 use std::num::NonZeroUsize;
+use std::thread::panicking;
 
 use crate::common::AllocBox as Box;
 use crate::ir::{Expr, GlobalDecl, ObjectLit, TupleItem, Unary};
@@ -54,6 +55,9 @@ pub struct Compiler<'alloc> {
 
     current_function_name: ConstantTableIdx,
     interned_strings: BTreeMap<&'alloc str, ConstantTableIdx>,
+
+    is_game: bool,
+    initial_state_index: Option<ConstantTableIdx>,
 }
 
 #[derive(Debug)]
@@ -171,6 +175,10 @@ impl<'alloc> Compiler<'alloc> {
         let (idx, buf) =
             self.alloc_constant_with_len(ConstantKind::String, size.try_into().unwrap());
 
+        if idx.0 == 7 {
+            println!("STRING: {}", string);
+        }
+
         let len = string.len() as u32;
         buf[0..u32_size].copy_from_slice(&len.to_le_bytes());
         buf[u32_size..].copy_from_slice(string.as_bytes());
@@ -214,7 +222,6 @@ impl<'alloc> Compiler<'alloc> {
 
         // Store the starting index of the data in the constants vector
         let idx = self.new_constant_idx();
-        println!("CONSTANT IDX: {:?}", idx);
         let table_idx = self.add_constant_table_entry(idx, kind);
 
         // Extend the constants with data_len
@@ -323,7 +330,15 @@ impl<'alloc> Compiler<'alloc> {
 
         if let Some(main_fn_name) = self.get_name_constant("Main") {
             self.push_op_with_constant(Op::CallMain, main_fn_name);
+
+            if self.is_game && self.initial_state_index.is_none() {
+                panic!(
+                    "`InitialStateIndex` must be exported if RequestAnimationFrame<...> is called"
+                )
+            }
         }
+
+        self.push_op(Op::Exit);
     }
 
     fn compile_statement(&mut self, stmt: &'alloc ir::Statement<'alloc>) {
@@ -344,10 +359,18 @@ impl<'alloc> Compiler<'alloc> {
         self.compile_expr(&var_decl.expr);
         let name = var_decl.ident.name();
         let name = self.alloc_constant_string(name);
-        let constant_idx = *self.globals.get(&name).unwrap();
+
+        if var_decl.ident.name() == "InitialState" {
+            self.initial_state_index = Some(name);
+            self.main_chunk_mut()
+                .code
+                .push_op_with_constant(Op::SetInitialState, name);
+            return;
+        }
+
         self.main_chunk_mut()
             .code
-            .push_op_with_constant(Op::SetGlobal, constant_idx);
+            .push_op_with_constant(Op::SetGlobal, name);
     }
 
     fn compile_fn_decl(&mut self, fn_decl: &'alloc ir::FnDecl<'alloc>) {
@@ -364,12 +387,16 @@ impl<'alloc> Compiler<'alloc> {
             .enumerate()
             .for_each(|(idx, param)| self.compile_fn_param_check(param, idx as u8));
         self.compile_expr(&fn_decl.body);
-        // If we are exiting `Main` function or the global scope, emit a program
-        // instruction exit instead of popping the call frame
-        self.push_op(match name_constant {
-            GLOBAL_STR_TABLE_IDX | MAIN_STR_TABLE_IDX => Op::Exit,
-            _ => Op::PopCallFrame,
-        });
+
+        // if name_constant == MAIN_STR_TABLE_IDX && self.is_game {
+        //     let initial_state_constant = self
+        //         .initial_state_index
+        //         .expect("Game requires InitialStateIndex to be exported");
+        //     self.push_op_with_constant(Op::SetGlobal, initial_state_constant);
+        // }
+
+        self.push_op(Op::PopCallFrame);
+
         self.current_function_name = prev_name;
     }
 
@@ -564,6 +591,12 @@ impl<'alloc> Compiler<'alloc> {
                         self.push_op(Op::Mul);
                         return;
                     }
+                    "Div" => {
+                        assert_eq!(2, call.args.len());
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::Div);
+                        return;
+                    }
                     "Eq" => {
                         assert_eq!(2, call.args.len());
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
@@ -574,6 +607,12 @@ impl<'alloc> Compiler<'alloc> {
                         assert_eq!(2, call.args.len());
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
                         self.push_op(Op::Lte);
+                        return;
+                    }
+                    "Gte" => {
+                        assert_eq!(2, call.args.len());
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::Gte);
                         return;
                     }
                     "Update" => {
@@ -626,9 +665,18 @@ impl<'alloc> Compiler<'alloc> {
                     }
                     "RequestAnimFrame" => {
                         assert_eq!(count, 1);
+                        if self.current_function_name != MAIN_STR_TABLE_IDX {
+                            panic!("RequestAnimFrame can only be called in Main<...>");
+                        }
+
+                        if self.is_game == true {
+                            panic!("RequestAnimFrame already called.");
+                        }
+
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
                         let name = self.alloc_constant_string("RequestAnimFrame");
                         self.push_call_native(name, count);
+                        self.is_game = true;
                     }
                     _ => {
                         println!("NAME: {:?}", call.name());
@@ -1054,7 +1102,7 @@ pub mod serialize {
         magic: u32,
         constants_offset: u32,
         functions_offset: u32,
-        _pad: u32,
+        is_game: u32,
     }
 
     #[repr(C, align(8))]
@@ -1102,7 +1150,7 @@ pub mod serialize {
             constants_offset: size_of::<Header>() as u32,
             // patched later
             functions_offset: 0,
-            _pad: 0,
+            is_game: compiler.is_game as u32,
         };
         buf.extend_from_slice(bytemuck::cast_slice(&[header]));
 

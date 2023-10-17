@@ -25,8 +25,11 @@ zig-out/bin/tyvm: vm/*.zig compiler
 zig-out/bin/tyvm.wasm: vm/*.zig compiler-wasm
 	zig build -Dtarget=wasm32-wasi $(ZIG_FLAGS)
 
+site/public/tyvm.wasm: zig-out/bin/tyvm.wasm
+	cp zig-out/bin/tyvm.wasm site/public/tyvm.wasm
+
 vm: zig-out/bin/tyvm
-vm-wasm: zig-out/bin/tyvm.wasm
+vm-wasm: zig-out/bin/tyvm.wasm site/public/tyvm.wasm
 
 .PHONY: clean
 clean:

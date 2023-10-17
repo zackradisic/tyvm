@@ -1,4 +1,13 @@
-import { Add, Sub, Div, RequestAnimFrame, Mul, Update } from "./std";
+import {
+  Add,
+  Sub,
+  Div,
+  RequestAnimFrame,
+  Mul,
+  Update,
+  DrawCommandKindImage,
+  DrawCommandKindClearCanvas,
+} from "./std";
 
 type Gravity = 1;
 type Jump = -15;
@@ -16,7 +25,7 @@ type Pipe = { x: number; y: number };
 
 type DrawCommand =
   | {
-      type: "DrawImage";
+      type: 0;
       img: string;
       x: number;
       y: number;
@@ -24,7 +33,7 @@ type DrawCommand =
       height: number;
     }
   | {
-      type: "ClearCanvas";
+      type: 1;
       x: number;
       y: number;
       width: number;
@@ -47,7 +56,7 @@ type DrawBird<S extends GameState> = Update<
     drawCommands: [
       ...S["drawCommands"],
       {
-        type: "DrawImage";
+        type: DrawCommandKindImage;
         img: "bird";
         x: 50;
         y: S["birdY"];
@@ -68,17 +77,17 @@ type ApplyJump<S extends GameState> = Update<
 
 type UpdatePipes<S extends GameState> = Update<S, {}>;
 
-type GameLoop<S extends GameState> = RequestAnimFrame<
-  CheckCollision<UpdatePipes<DrawBird<ApplyJump<ApplyGravity<S>>>>>
->;
-
 type canvasHeight = 600;
 
-export type Main<Args extends string[]> = GameLoop<{
+export type InitialState = {
   birdY: Div<canvasHeight, 2>;
   velocity: 0;
   pipes: [];
   drawCommands: [];
   jumpInput: false;
   isCollided: false;
-}>;
+};
+
+export type Main<_Args extends string[]> = RequestAnimFrame<
+  CheckCollision<UpdatePipes<DrawBird<ApplyJump<ApplyGravity<InitialState>>>>>
+>;

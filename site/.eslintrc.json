@@ -1,0 +1,13 @@
+{
+  "extends": "@modfy",
+  "parserOptions": {
+    "project": "./tsconfig.json"
+  },
+  "rules": {
+    "jsx-a11y/anchor-is-valid": "off",
+    "jsx-a11y/no-redundant-roles": "off",
+    "react/no-unknown-property": "off",
+    "no-labels": "off",
+    "simple-import-sort/imports": "off"
+  }
+}

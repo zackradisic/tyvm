@@ -1,6 +1,6 @@
 #+title: Todo
 
-* TODO fucking important [0/12]
+* TODO fucking important [0/13]
 ** TODO Unions [1/3]
 in terms of representation, we just need =Vec<Value>= for now. later we can do specialization for common like =T | undefined=
 
@@ -309,6 +309,13 @@ So we want this behaviour. How do we make it work?
 The key insight is that the =|= operator /distributes over the discriminant key of a discriminated union/.
 **** DONE Detect discriminated unions and store their tag
 **** TODO Implement specialized discriminated union subtype logic
+** TODO Flappy bird
+*** TODO VM checks =Value= extends =DrawCommand= and then serializes it to JS object
+*** TODO In the wrapper, execute draw commands
+*** TODO In the wrapper, call the VM function again
+
+
+
 
 ** TODO Keys on non-object types
 all types are actually objects and have additional keys
