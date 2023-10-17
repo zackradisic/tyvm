@@ -49,9 +49,8 @@ pub extern "C" fn tyvm_bytecode_free(bytecode: Bytecode) {
 
 pub fn compile<'input, 'ir>(ir_arena: &'ir oxc_allocator::Allocator, source: &str) -> Vec<u8> {
     let ir = {
-        let arena = oxc_allocator::Allocator::default();
         let parser = oxc_parser::Parser::new(
-            &arena,
+            &ir_arena,
             &source,
             SourceType::default().with_typescript_definition(true),
         );
@@ -66,7 +65,7 @@ pub fn compile<'input, 'ir>(ir_arena: &'ir oxc_allocator::Allocator, source: &st
         }
 
         let transform = ir_transform_oxc::Transform { arena: &ir_arena };
-        ir_arena.alloc(transform.transform_oxc(arena.alloc(result.program)))
+        ir_arena.alloc(transform.transform_oxc(ir_arena.alloc(result.program)))
     };
 
     let mut compiler = Compiler::new();
