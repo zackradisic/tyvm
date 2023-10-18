@@ -46,6 +46,13 @@ pub export fn jump(vm: *VM) void {
     initial_state.Object.update_field(jump_input, VM.Value.boolean(true));
 }
 
+pub export fn reset(vm: *VM) void {
+    if (!vm.is_game) @panic("Can only call if is a game");
+    const initial_state: *VM.Value = vm.globals.getPtr(vm.initial_state_index.?).?;
+    const reset_val = vm.make_string_from_slice("reset") catch @panic("OOM");
+    initial_state.Object.update_field(reset_val, VM.Value.boolean(true));
+}
+
 pub export fn is_game(vm: *VM) bool {
     return vm.is_game;
 }

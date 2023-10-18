@@ -87,7 +87,7 @@ const instantiateWasm = async (
   wasi: WASI,
   vmState: { state: VMState | undefined },
   canvasRef: React.RefObject<HTMLCanvasElement | undefined>
-) => {
+): Promise<[WebAssembly.Instance, WebAssembly.Memory]> => {
   const bird = new Image();
   bird.src = "/bird.png";
   const drawState: DrawState = {
@@ -97,9 +97,13 @@ const instantiateWasm = async (
   };
   let ctx: CanvasRenderingContext2D | undefined = undefined;
   const wasm = await WebAssembly.compileStreaming(fetch("/tyvm.wasm"));
+  // const memory = new WebAssembly.Memory({ initial: 65536, maximum: 65536 });
+  // const memory = new WebAssembly.Memory({ initial: 32536, maximum: 65536 });
+
   const instance = await WebAssembly.instantiate(wasm, {
     wasi_snapshot_preview1: wasi.wasiImport,
     env: {
+      // memory,
       request_anim_frame(
         serializedDrawCommandsPtr: number,
         serializedDrawCommandsLen: number,
@@ -120,6 +124,7 @@ const instantiateWasm = async (
             serializedDrawCommandsPtr,
             serializedDrawCommandsLen
           );
+          console.log("DRAW COMMANDS", drawCommands);
 
           drawCommandsExecuteMany(ctx, drawState, drawCommands);
 
@@ -132,7 +137,7 @@ const instantiateWasm = async (
       },
     },
   });
-  return instance;
+  return [instance, instance.exports.memory as WebAssembly.Memory];
 };
 
 export const initWasm = async (
@@ -151,8 +156,8 @@ export const initWasm = async (
 
   const wasi = new WASI([], [], fds);
 
-  const instance = await instantiateWasm(wasi, vmState, canvasRef);
-  const memory = instance.exports.memory as WebAssembly.Memory;
+  const [instance, memory] = await instantiateWasm(wasi, vmState, canvasRef);
+  console.log("Wasm memory", memory);
   const vmFns = instance.exports as Tyvm.Exports;
   const { init, run, get_function, get_global_function, alloc, dealloc } =
     vmFns;
@@ -180,24 +185,37 @@ export const initWasm = async (
 
         console.log("[_initialize] state", vmState);
 
+        let panicked = false;
         // const globalFunctionRef = get_global_function(vmState.state!.vmRef);
-        try {
-          if (isGame) {
-            window.addEventListener("keydown", (e) => {
-              console.log("THE EVENT", e);
-              if (e.code === "Space") {
-                e.preventDefault();
-                vmFns.jump(vmRef);
-              }
-            });
-            const runGame = () => {
+        if (isGame) {
+          window.addEventListener("keydown", (e) => {
+            if (e.code === "Space") {
+              e.preventDefault();
+              vmFns.jump(vmRef);
+            } else if (e.code === "Enter") {
+              e.preventDefault();
+              vmFns.reset(vmRef);
+            }
+          });
+          const runGame = () => {
+            if (panicked) return;
+            try {
               run(vmState.state!.vmRef, globalFn);
-              requestAnimationFrame(runGame);
-            };
+            } catch (err) {
+              console.error(err);
+              console.log("[stdout]", fds[1].buffer);
+              console.log("[stderr]", fds[2].buffer);
+              panicked = true;
+            }
+
             requestAnimationFrame(runGame);
-          } else {
-            run(vmState.state!.vmRef, globalFn);
-          }
+          };
+          requestAnimationFrame(runGame);
+          return;
+        }
+
+        try {
+          run(vmState.state!.vmRef, globalFn);
         } catch (err) {
           console.error(err);
         }
@@ -276,3 +294,56 @@ class Stdio extends Fd {
     };
   }
 }
+
+const lmao = {
+  birdY: 300,
+  drawCommands: [
+    {
+      x: 0,
+      y: 0,
+      height: 600,
+      img: "/background.png",
+      type: 0,
+      width: 800,
+    },
+    {
+      x: 50,
+      y: 300,
+      height: 40,
+      img: "/bird.png",
+      type: 0,
+      width: 60,
+    },
+    {
+      x: 799,
+      y: -159,
+      height: 250,
+      img: "/pipeNorth.png",
+      width: 60,
+    },
+    {
+      x: 799,
+      y: 291,
+      height: 250,
+      img: "/pipeSouth.png",
+      width: 60,
+    },
+  ],
+  isCollided: false,
+  jumpInput: false,
+  pipes: [
+    {
+      x: 799,
+      y: -159,
+    },
+    {
+      x: 999,
+      y: -147,
+    },
+    {
+      x: 1199,
+      y: -126,
+    },
+  ],
+  velocity: 0.5,
+};

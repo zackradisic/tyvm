@@ -612,6 +612,18 @@ impl<'alloc> Compiler<'alloc> {
                         self.push_op(Op::Div);
                         return;
                     }
+                    "Floor" => {
+                        assert_eq!(1, call.args.len());
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::Floor);
+                        return;
+                    }
+                    "Mod" => {
+                        assert_eq!(2, call.args.len());
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::Mod);
+                        return;
+                    }
                     "Eq" => {
                         assert_eq!(2, call.args.len());
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
@@ -634,6 +646,18 @@ impl<'alloc> Compiler<'alloc> {
                         assert_eq!(2, call.args.len());
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
                         self.push_op(Op::Gte);
+                        return;
+                    }
+                    "And" => {
+                        assert_eq!(2, call.args.len());
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::And);
+                        return;
+                    }
+                    "Or" => {
+                        assert_eq!(2, call.args.len());
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::Or);
                         return;
                     }
                     "Update" => {
@@ -698,6 +722,12 @@ impl<'alloc> Compiler<'alloc> {
                         let name = self.alloc_constant_string("RequestAnimFrame");
                         self.push_call_native(name, count);
                         self.is_game = true;
+                    }
+                    "Rand" => {
+                        assert_eq!(count, 2);
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        let name = self.alloc_constant_string("Rand");
+                        self.push_call_native(name, count);
                     }
                     _ => {
                         println!("NAME: {:?}", call.name);

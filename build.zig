@@ -34,8 +34,11 @@ pub fn build(b: *std.Build) void {
                 "alloc",
                 "dealloc", 
                 "is_game",
-                "jump"
+                "jump",
+                "reset"
             };
+            lib.initial_memory = 65536 * 65536;
+            lib.max_memory = 65536 * 65536;
             break :exe lib;
         }
         const exe = b.addExecutable(.{

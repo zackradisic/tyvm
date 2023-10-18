@@ -13,6 +13,7 @@ export type Exports = {
   dealloc(ptr: number, len: number): void;
   is_game(vm: VMRef): boolean;
   jump(vm: VMRef): void;
+  reset(vm: VMRef): void;
 };
 
 export type DrawCommandKindImage = 0;

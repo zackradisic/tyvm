@@ -12,6 +12,9 @@ const VM = @This();
 // const TRACING: bool = true;
 const TRACING: bool = false;
 
+var rnd = std.rand.DefaultPrng.init(0);
+
+
 stack: [1024]Value = [_]Value{.{.Number = 0.0}} ** 1024,
 stack_top: [*]Value = undefined,
 
@@ -29,6 +32,9 @@ constant_table: []const ConstantTableEntry align(8),
 constant_pool: []const u8 align(8),
 is_game: bool = false,
 initial_state_index: ?ConstantTableIdx = null,
+length_string: ?ConstantTableIdx = null,
+length_string_ptr: ?[*]const u8 = null,
+
 
 pub fn new(alloc: Allocator, bytecode: []const u8) !VM {
     var vm: VM = .{
@@ -90,6 +96,9 @@ fn load_bytecode(self: *VM, bytecode: []const u8) !void {
             const str = self.read_constant_string(entry.idx);
             if (self.is_game and std.mem.eql(u8, str.as_str(), "InitialState")) {
                 self.initial_state_index = ConstantTableIdx.new(@intCast(i));
+            } else if (std.mem.eql(u8, str.as_str(), "length")) {
+                self.length_string = ConstantTableIdx.new(@intCast(i));
+                self.length_string_ptr = str.ptr;
             }
             try self.interned_strings.put(str.as_str(), str);
             try self.constant_strings.put(str.as_str(), ConstantTableIdx.new(@intCast(i)));
@@ -151,6 +160,14 @@ fn load_native_functions(self: *VM) !void {
                 .Any,
             }
         },
+        .{
+            .name = "Rand",
+            .fn_ptr = NativeFunction.rand_impl,
+            .arg_types = &[_]Value{
+                .NumberKeyword,
+                .NumberKeyword,
+            }
+        },
     };
 
     for (native_fns) |native_fn| {
@@ -199,6 +216,7 @@ pub fn run(self: *VM, function: *const Function) !void {
             const stack_len = stack_top_int / @sizeOf(Value) - stack_bot_int / @sizeOf(Value);
             for (0..stack_len) |i| {
                 print("    {?}\n", .{self.stack[i]});
+                // self.stack[i].debug(debug_alloc.allocator(), "    ") catch @panic("OOM");
             }
             print("({s}) OP: {s}\n", .{fn_name.as_str(), @tagName(op)});
         }
@@ -224,6 +242,15 @@ pub fn run(self: *VM, function: *const Function) !void {
                 const a = self.pop();
                 self.push(Value.number(a.Number / b.Number));
             },
+            .Floor => {
+                const a = self.peek_ptr(0);
+                a.* = Value.number(@floor(a.Number));
+            },
+            .Mod => {
+                const b = self.pop();
+                const a = self.pop();
+                self.push(Value.number(@mod(a.Number, b.Number)));
+            },
             .Eq => {
                 const b = self.pop();
                 const a = self.pop();
@@ -243,6 +270,16 @@ pub fn run(self: *VM, function: *const Function) !void {
                 const b = self.pop();
                 const a = self.pop();
                 self.push(Value.boolean(a.Number >= b.Number));
+            },
+            .And => {
+                const b = self.pop();
+                const a = self.pop();
+                self.push(Value.boolean(a.Bool and b.Bool));
+            },
+            .Or => {
+                const b = self.pop();
+                const a = self.pop();
+                self.push(Value.boolean(a.Bool or b.Bool));
             },
             .CallMain => {
                 const main_name = frame.read_constant_idx();
@@ -307,7 +344,8 @@ pub fn run(self: *VM, function: *const Function) !void {
             .ExtendsTrue => {
                 const a = self.pop();
                 const skip_then_branch_offset = frame.read_u16();
-                if (@as(ValueKind, a) == .Bool and a.Bool) {
+                // If not true
+                if (!(@as(ValueKind, a) == .Bool and a.Bool)) {
                     frame.ip = @ptrCast(&frame.func.code[skip_then_branch_offset]);
                 }
             },
@@ -544,19 +582,25 @@ fn extends_any_of(self: *VM, a: Value, b_items: []const Value) bool {
 }
 
 fn index_value(self: *VM, object: Value, index: Value) Value {
-    _ = self;
     switch (object) {
         .Object => |obj| {
             const field = obj.get_field(index.String) orelse return .Any;
             return field.value;
         },
         .Array => |arr| {
-            if (@as(ValueKind, index) == ValueKind.Number) { 
-                if (std.math.floor(index.Number) != index.Number) return .Undefined;
-                return arr.item_at_index(@intFromFloat(index.Number));
+            switch (index) {
+                .Number => |v| {
+                    if (std.math.floor(v) != v) return .Undefined;
+                    return arr.item_at_index(@intFromFloat(v));
+                },
+                .String => |s| {
+                    if (self.length_string_ptr != null and self.length_string_ptr == s.ptr) return Value.number(@floatFromInt(arr.len));
+                    // TODO:
+                    unreachable;
+                },
+                // TODO: 
+                else => unreachable,
             }
-            // TODO: 
-            unreachable;
         },
         .String => |str| {
             _ = str;
@@ -897,6 +941,10 @@ inline fn peek(self: *VM, distance: usize) Value {
     return (self.stack_top - 1 - distance)[0];
 }
 
+inline fn peek_ptr(self: *VM, distance: usize) *Value {
+    return &(self.stack_top - 1 - distance)[0];
+}
+
 inline fn push(self: *VM, value: Value) void {
     self.stack_top[0] = value;
     self.stack_top += 1;
@@ -1105,6 +1153,12 @@ pub const Function = struct {
                 .Gte => {
                     std.debug.print("{} Gte\n", .{j});
                 },
+                .And => {
+                    std.debug.print("{} And\n", .{j});
+                },
+                .Or => {
+                    std.debug.print("{} Or\n", .{j});
+                },
                 .Eq => {
                     std.debug.print("{} EQ\n", .{j});
                 },
@@ -1134,6 +1188,12 @@ pub const Function = struct {
                 },
                 .Div => {
                     std.debug.print("{} Div\n", .{j});
+                },
+                .Floor => {
+                    std.debug.print("{} Floor\n", .{j});
+                },
+                .Mod => {
+                    std.debug.print("{} Mod\n", .{j});
                 },
                 .Intersect => {
                     const count = self.code[i];
@@ -1365,6 +1425,17 @@ const NativeFunction = struct {
 
         return Value.Any;
     }
+
+    pub fn rand_impl(vm: *VM, args: []const Value) !Value {
+        _ = vm;
+        const min = args[0].Number;
+        const max = args[1].Number;
+
+        const space_width = max - min;
+
+        const random = rnd.random().float(f64) * space_width + min;
+        return Value.number(random);
+    }
 };
 
 const Op = enum(u8) {
@@ -1373,10 +1444,14 @@ const Op = enum(u8) {
     Sub,
     Mul,
     Div,
+    Floor,
+    Mod,
     Eq,
     Lte,
     Lt,
     Gte,
+    And,
+    Or,
     Intersect,
     Union,
     Constant,
@@ -1507,6 +1582,7 @@ pub const Value = union(ValueKind){
 
     fn debug(self: Value, alloc: Allocator, comptime str: []const u8) !void {
         var buf = std.ArrayListUnmanaged(u8){};
+        defer buf.deinit(alloc);
         try self.encode_as_string(alloc, &buf, true);
         print("{s}: {s}\n", .{str, buf.items.ptr[0..buf.items.len]});
     }
