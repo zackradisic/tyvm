@@ -8,6 +8,7 @@ pub enum Op {
     Div,
     Eq,
     Lte,
+    Lt,
     Gte,
     Intersect,
     Union,

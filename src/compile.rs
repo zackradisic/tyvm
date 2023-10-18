@@ -25,10 +25,6 @@ impl<'alloc> Compile<'alloc> for &ir::Expr<'alloc> {
     }
 }
 
-impl<'alloc> Compile<'alloc> for () {
-    fn compile(&self, compiler: &mut Compiler<'alloc>) {}
-}
-
 impl<'alloc, F: Fn(&mut Compiler<'alloc>) -> ()> Compile<'alloc> for F {
     fn compile(&self, compiler: &mut Compiler<'alloc>) {
         self(compiler);
@@ -599,6 +595,12 @@ impl<'alloc> Compiler<'alloc> {
                         self.push_op(Op::Eq);
                         return;
                     }
+                    "Lt" => {
+                        assert_eq!(2, call.args.len());
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::Lt);
+                        return;
+                    }
                     "Lte" => {
                         assert_eq!(2, call.args.len());
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
@@ -823,8 +825,6 @@ impl<'alloc> Compiler<'alloc> {
         // self.compile_expr(check_ty);
         check_ty.compile(self);
         self.compile_expr(extends_ty);
-
-        // self.push_op(Op::Extends);
         self.push_op(extends_op);
 
         let jump_to_else_branch_if_false_instr_idx = self.cur_fn_mut().code.buf.len();

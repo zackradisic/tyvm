@@ -234,6 +234,11 @@ pub fn run(self: *VM, function: *const Function) !void {
                 const a = self.pop();
                 self.push(Value.boolean(a.Number <= b.Number));
             },
+            .Lt => {
+                const b = self.pop();
+                const a = self.pop();
+                self.push(Value.boolean(a.Number < b.Number));
+            },
             .Gte => {
                 const b = self.pop();
                 const a = self.pop();
@@ -296,6 +301,15 @@ pub fn run(self: *VM, function: *const Function) !void {
                 const a = self.pop();
                 const skip_then_branch_offset = frame.read_u16();
                 if (!self.extends(a, b)) {
+                    frame.ip = @ptrCast(&frame.func.code[skip_then_branch_offset]);
+                }
+            },
+            .ExtendsNoPopLeft => {
+                const a = self.peek(1);
+                const b = self.pop();
+                const skip_then_branch_offset = frame.read_u16();
+                if (!self.extends(a, b)) {
+                    _ = self.pop();
                     frame.ip = @ptrCast(&frame.func.code[skip_then_branch_offset]);
                 }
             },
@@ -1078,6 +1092,9 @@ pub const Function = struct {
                 .Lte => {
                     std.debug.print("{} Lte\n", .{j});
                 },
+                .Lt => {
+                    std.debug.print("{} Lt\n", .{j});
+                },
                 .Gte => {
                     std.debug.print("{} Gte\n", .{j});
                 },
@@ -1351,6 +1368,7 @@ const Op = enum(u8) {
     Div,
     Eq,
     Lte,
+    Lt,
     Gte,
     Intersect,
     Union,
