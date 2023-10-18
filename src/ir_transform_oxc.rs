@@ -31,6 +31,7 @@ impl<'output> IrTransform<'output> for Transform<'output> {
 
 impl<'input, 'ir> Transform<'ir> {
     pub fn transform_oxc(&self, program: &'input ast::Program<'input>) -> Program<'ir> {
+        // panic!("PROGRAM: {:#?}", program);
         let mut stmts = AllocVec::new_in(self.arena);
 
         for stmt in &program.body {

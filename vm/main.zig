@@ -3,7 +3,7 @@ const VM = @import("./vm.zig");
 const Compiler = @import("./compiler.zig");
 
 pub fn main() !void {
-    var file = try std.fs.cwd().openFile("./test/head-tail.ts", .{});
+    var file = try std.fs.cwd().openFile("./test/extends-true.ts", .{});
     defer file.close();
     const source_bytes = try file.readToEndAlloc(std.heap.c_allocator, std.math.maxInt(u32));
     defer std.heap.c_allocator.free(source_bytes);

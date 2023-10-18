@@ -19,6 +19,7 @@ pub enum Op {
     CallMain,
     CallNative,
     Extends,
+    ExtendsTrue,
     ExtendsNoPopLeft,
     PanicExtends,
     Jump,

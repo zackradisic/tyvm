@@ -5,7 +5,10 @@ use std::num::NonZeroUsize;
 use std::thread::panicking;
 
 use crate::common::AllocBox as Box;
-use crate::ir::{Expr, GlobalDecl, NumberLiteral, ObjectLit, TupleItem, Unary, UnaryOperator};
+use crate::ir::{
+    BooleanLiteral, Expr, GlobalDecl, LiteralExpr, NumberLiteral, ObjectLit, TupleItem, Unary,
+    UnaryOperator,
+};
 use crate::op::Op;
 use crate::{common::*, ir};
 
@@ -23,6 +26,10 @@ impl<'alloc> Compile<'alloc> for &ir::Expr<'alloc> {
     fn compile(&self, compiler: &mut Compiler<'alloc>) {
         compiler.compile_expr(self);
     }
+}
+
+impl<'alloc> Compile<'alloc> for () {
+    fn compile(&self, compiler: &mut Compiler<'alloc>) {}
 }
 
 impl<'alloc, F: Fn(&mut Compiler<'alloc>) -> ()> Compile<'alloc> for F {
@@ -543,13 +550,29 @@ impl<'alloc> Compiler<'alloc> {
             ir::Expr::String => {
                 self.push_op(Op::String);
             }
-            ir::Expr::If(if_expr) => self.compile_cond(
-                &if_expr.check_type,
-                &if_expr.extends_type,
-                &if_expr.then,
-                &if_expr.r#else,
-                Op::Extends,
-            ),
+            ir::Expr::If(if_expr) => {
+                // Specialization: T extends true
+                if let Some(LiteralExpr::Boolean(BooleanLiteral { value: true })) =
+                    if_expr.extends_type.as_literal()
+                {
+                    self.compile_cond(
+                        &if_expr.check_type,
+                        (),
+                        &if_expr.then,
+                        &if_expr.r#else,
+                        Op::ExtendsTrue,
+                    );
+                    return;
+                }
+
+                self.compile_cond(
+                    &if_expr.check_type,
+                    &if_expr.extends_type,
+                    &if_expr.then,
+                    &if_expr.r#else,
+                    Op::Extends,
+                );
+            }
             ir::Expr::Identifier(ident) => self.compile_ident(ident),
             ir::Expr::StringLiteral(str_lit) => {
                 let constant_idx = self.alloc_constant_string(&str_lit.value);
@@ -817,14 +840,14 @@ impl<'alloc> Compiler<'alloc> {
     fn compile_cond(
         &mut self,
         check_ty: impl Compile<'alloc>,
-        extends_ty: &ir::Expr<'alloc>,
+        extends_ty: impl Compile<'alloc>,
         then: impl Compile<'alloc>,
         r#else: &ir::Expr<'alloc>,
         extends_op: Op,
     ) {
         // self.compile_expr(check_ty);
         check_ty.compile(self);
-        self.compile_expr(extends_ty);
+        extends_ty.compile(self);
         self.push_op(extends_op);
 
         let jump_to_else_branch_if_false_instr_idx = self.cur_fn_mut().code.buf.len();

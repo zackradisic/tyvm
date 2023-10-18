@@ -304,6 +304,13 @@ pub fn run(self: *VM, function: *const Function) !void {
                     frame.ip = @ptrCast(&frame.func.code[skip_then_branch_offset]);
                 }
             },
+            .ExtendsTrue => {
+                const a = self.pop();
+                const skip_then_branch_offset = frame.read_u16();
+                if (@as(ValueKind, a) == .Bool and a.Bool) {
+                    frame.ip = @ptrCast(&frame.func.code[skip_then_branch_offset]);
+                }
+            },
             .ExtendsNoPopLeft => {
                 const a = self.peek(1);
                 const b = self.pop();
@@ -1175,7 +1182,7 @@ pub const Function = struct {
                 .PanicExtends => {
                     std.debug.print("{} PanicExtends\n", .{j});
                 },
-                .Extends, .ExtendsNoPopLeft => {
+                .Extends, .ExtendsTrue, .ExtendsNoPopLeft => {
                     const skip_then = @as(u16, @intCast(self.code[i + 1])) << 8 | @as(u16, @intCast(self.code[i]));
                     i += 2;
                     std.debug.print("{} {?} (skip_then={})\n", .{j, op, skip_then});
@@ -1379,6 +1386,7 @@ const Op = enum(u8) {
     CallMain,
     CallNative,
     Extends,
+    ExtendsTrue,
     ExtendsNoPopLeft,
     PanicExtends,
     Jump,
