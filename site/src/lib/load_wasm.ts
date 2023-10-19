@@ -124,7 +124,6 @@ const instantiateWasm = async (
             serializedDrawCommandsPtr,
             serializedDrawCommandsLen
           );
-          console.log("DRAW COMMANDS", drawCommands);
 
           drawCommandsExecuteMany(ctx, drawState, drawCommands);
 
@@ -157,7 +156,6 @@ export const initWasm = async (
   const wasi = new WASI([], [], fds);
 
   const [instance, memory] = await instantiateWasm(wasi, vmState, canvasRef);
-  console.log("Wasm memory", memory);
   const vmFns = instance.exports as Tyvm.Exports;
   const { init, run, get_function, get_global_function, alloc, dealloc } =
     vmFns;
@@ -203,7 +201,9 @@ export const initWasm = async (
               run(vmState.state!.vmRef, globalFn);
             } catch (err) {
               console.error(err);
+              // @ts-expect-error
               console.log("[stdout]", fds[1].buffer);
+              // @ts-expect-error
               console.log("[stderr]", fds[2].buffer);
               panicked = true;
             }

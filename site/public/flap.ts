@@ -20,8 +20,10 @@ import {
 
 type Gravity = 1;
 type Jump = -12.5;
-type canvasHeight = 600;
-type canvasWidth = 800;
+// type canvasHeight = 600;
+// type canvasWidth = 800;
+type canvasHeight = 400;
+type canvasWidth = 600;
 type birdX = 50;
 type birdWidth = 60;
 type birdHeight = 40;
@@ -31,6 +33,7 @@ type pipeWidth = 60;
 type pipeHeight = 250;
 type pipeGap = 200;
 type pipesAmount = Mul<Floor<Div<canvasWidth, Add<pipeWidth, pipeGap>>>, 2>;
+type pipeMoveSpeed = 2;
 
 type Pipe = { x: number; y: number };
 
@@ -164,10 +167,11 @@ type CheckCollision<S extends GameState> = Gte<
       S,
       {
         isCollided: true;
+        velocity: 10;
       }
     >
   : CheckPipeCollisions<birdX, S["birdY"], 0, S["pipes"]> extends true
-  ? Update<S, { isCollided: true }>
+  ? Update<S, { isCollided: true; velocity: 10 }>
   : S;
 
 type FarthestPipe<
@@ -190,7 +194,7 @@ type MovePipesImpl<
   Acc extends Array<Pipe>,
 > = Lt<I, Pipes["length"]> extends true
   ? Pipes[I] extends infer P extends Pipe
-    ? Lte<Add<Sub<P["x"], 1>, pipeWidth>, 0> extends true // pipe is off the screen
+    ? Lte<Add<Sub<P["x"], pipeMoveSpeed>, pipeWidth>, 0> extends true // pipe is off the screen
       ? FarthestPipe<0, Pipes, 0, 0> extends infer Next extends Pipe
         ? MovePipesImpl<
             Pipes,
@@ -207,7 +211,7 @@ type MovePipesImpl<
       : MovePipesImpl<
           Pipes,
           Add<I, 1>,
-          [...Acc, { x: Sub<P["x"], 1>; y: P["y"] }]
+          [...Acc, { x: Sub<P["x"], pipeMoveSpeed>; y: P["y"] }]
         >
     : false
   : Acc;
