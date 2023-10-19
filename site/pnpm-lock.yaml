@@ -5,6 +5,9 @@ settings:
   excludeLinksFromLockfile: false
 
 dependencies:
+  '@bjorn3/browser_wasi_shim':
+    specifier: ^0.2.15
+    version: 0.2.15
   '@wasmer/wasi':
     specifier: ^1.2.2
     version: 1.2.2
@@ -1462,6 +1465,10 @@ packages:
       '@babel/helper-string-parser': 7.22.5
       '@babel/helper-validator-identifier': 7.22.20
       to-fast-properties: 2.0.0
+
+  /@bjorn3/browser_wasi_shim@0.2.15:
+    resolution: {integrity: sha512-nIALnN3uq/UFCz1yyJ+VtbBOHQTAhFl/ZYs8LRxqrza58lb4s1RF5y0B5jaaaU++QNyN1v87kDiKIkrauJnadA==}
+    dev: false
 
   /@eslint-community/eslint-utils@4.4.0(eslint@8.51.0):
     resolution: {integrity: sha512-1/sA4dwrzBAyeUoQ6oxahHKmrZvsnLCg4RfxW3ZFGGmQkSNQPFNLV9CUEFQP1x9EYXHTo5p6xdhZM1Ne9p/AfA==}
