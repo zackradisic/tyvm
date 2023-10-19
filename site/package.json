@@ -15,7 +15,8 @@
     "@wasmer/wasmfs": "^0.12.0",
     "next": "13.5.5",
     "react": "^18",
-    "react-dom": "^18"
+    "react-dom": "^18",
+    "ts-pattern": "^5.0.5"
   },
   "devDependencies": {
     "@modfy/eslint-config": "^0.1.2",

@@ -1,15 +1,32 @@
 import Image from "next/image";
 import { useEffect, useRef } from "react";
 import { initWasm } from "q/lib/load_wasm";
+import { match, P } from "ts-pattern";
 import React from "react";
+
+export type WasmLoadState =
+  | {
+      type: "idle";
+    }
+  | { type: "loading" }
+  | { type: "loaded" }
+  | { type: "error" };
 
 export default function Home() {
   const canvasRef = React.useRef<HTMLCanvasElement>();
-  const [gameLoaded, setGameLoaded] = React.useState(false);
+  const [gameLoaded, setGameLoaded] = React.useState<WasmLoadState>({
+    type: "idle",
+  });
 
   async function runWasm() {
-    await initWasm(canvasRef);
-    setGameLoaded(true);
+    try {
+      setGameLoaded({ type: "loading" });
+      await initWasm(canvasRef);
+      setGameLoaded({ type: "loaded" });
+    } catch (err) {
+      console.error("Error", err);
+      setGameLoaded({ type: "error" });
+    }
   }
 
   return (
@@ -30,9 +47,16 @@ export default function Home() {
       <button
         className="mt-20 bg-offwhite text-darkbg font-semibold rounded-md p-2"
         onClick={() => runWasm()}
-        disabled={gameLoaded}
+        disabled={match(gameLoaded.type)
+          .with(P.union("loading", "loaded", "error"), () => true)
+          .otherwise(() => false)}
       >
-        {gameLoaded ? "Game loaded" : "Load game"}
+        {match(gameLoaded.type)
+          .with("idle", () => "Load game")
+          .with("loaded", () => "Game loaded")
+          .with("loading", () => "Loading game..")
+          .with("error", () => "Error loading game!")
+          .exhaustive()}
       </button>
 
       <canvas
