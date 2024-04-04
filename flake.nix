@@ -44,7 +44,8 @@
       in rec {
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = with pkgs; [
-            zigpkgs.master
+            zigpkgs.master-2023-12-13 # the same version used in Bun
+            # zls version used is master
             # zls.zls
           ];
 

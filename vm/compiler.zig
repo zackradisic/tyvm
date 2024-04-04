@@ -1,11 +1,10 @@
-
 pub const Source = extern struct {
     ptr: [*]const u8,
     len: usize,
 };
 
 pub const Bytecode = extern struct {
-    ptr: [*] u8,
+    ptr: [*]u8,
     len: usize,
     cap: usize,
 };

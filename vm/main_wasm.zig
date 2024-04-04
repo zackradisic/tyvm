@@ -8,8 +8,7 @@ const Compiler = @import("./compiler.zig");
 //     return 0;
 // }
 
-pub  fn main() void {
-}
+pub fn main() void {}
 
 pub export fn init(source_ptr: [*]u8, len: usize) *VM {
     const bytecode: Compiler.Bytecode = Compiler.compile(.{ .ptr = source_ptr, .len = len });
@@ -17,7 +16,7 @@ pub export fn init(source_ptr: [*]u8, len: usize) *VM {
     var vm = VM.new(std.heap.c_allocator, bytecode.ptr[0..bytecode.len]) catch @panic("OOM");
     vm.init() catch @panic("OOM");
 
-    var vm_ptr = std.heap.c_allocator.create(VM) catch @panic("OOM");
+    const vm_ptr = std.heap.c_allocator.create(VM) catch @panic("OOM");
     vm_ptr.* = vm;
 
     return vm_ptr;

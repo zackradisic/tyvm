@@ -14,8 +14,7 @@ const TRACING: bool = false;
 
 var rnd = std.rand.DefaultPrng.init(0);
 
-
-stack: [1024]Value = [_]Value{.{.Number = 0.0}} ** 1024,
+stack: [1024]Value = [_]Value{.{ .Number = 0.0 }} ** 1024,
 stack_top: [*]Value = undefined,
 
 call_frames: [1024]CallFrame = [_]CallFrame{CallFrame.uninit()} ** 1024,
@@ -34,7 +33,6 @@ is_game: bool = false,
 initial_state_index: ?ConstantTableIdx = null,
 length_string: ?ConstantTableIdx = null,
 length_string_ptr: ?[*]const u8 = null,
-
 
 pub fn new(alloc: Allocator, bytecode: []const u8) !VM {
     var vm: VM = .{
@@ -72,7 +70,7 @@ fn load_bytecode(self: *VM, bytecode: []const u8) !void {
     std.debug.assert(functions_header.function_code_padding == 0);
 
     const constant_table_raw_ptr: [*]const ConstantTableEntry = @ptrCast(@alignCast(bytecode.ptr + header.constants_offset + @sizeOf(Bytecode.ConstantsHeader)));
-    const constant_table: []const ConstantTableEntry = constant_table_raw_ptr[0..constants_header.table_len / @sizeOf(ConstantTableEntry)];
+    const constant_table: []const ConstantTableEntry = constant_table_raw_ptr[0 .. constants_header.table_len / @sizeOf(ConstantTableEntry)];
     const constant_pool_raw_ptr: [*]const u8 = (bytecode.ptr + header.constants_offset + @sizeOf(Bytecode.ConstantsHeader) + constants_header.table_len);
     const constant_pool: []const u8 = constant_pool_raw_ptr[0..(constants_header.pool_size - constants_header.pool_padding)];
 
@@ -80,13 +78,10 @@ fn load_bytecode(self: *VM, bytecode: []const u8) !void {
     for (function_table) |*entry_| {
         const entry: *const Bytecode.FunctionTableEntry = entry_;
         const base: [*]const u8 = bytecode.ptr + functions_header.table_offset + functions_header.table_len * @sizeOf(Bytecode.FunctionTableEntry);
-        const function: Function = .{
-            .name = entry.name_constant_idx,
-            .code = base[entry.offset..entry.offset + entry.size]
-        };
+        const function: Function = .{ .name = entry.name_constant_idx, .code = base[entry.offset .. entry.offset + entry.size] };
         try self.functions.put(entry.name_constant_idx, function);
     }
-    
+
     self.is_game = header.is_game == 1;
     self.constant_pool = constant_pool;
     self.constant_table = constant_table;
@@ -108,66 +103,31 @@ fn load_bytecode(self: *VM, bytecode: []const u8) !void {
 
 fn load_native_functions(self: *VM) !void {
     const native_fns = [_]NativeFunction{
-        .{
-            .name = "AssertEq",
-            .fn_ptr = NativeFunction.assert_eq_impl,
-            .arg_types = &[_]Value{
-                .Any,
-                .Any
-            }
-        },
-        .{
-            .name = "Print",
-            .fn_ptr = NativeFunction.print_impl,
-            .arg_types = &[_]Value{
-                .Any,
-            }
-        },
-        .{
-            .name = "WriteFile",
-            .fn_ptr = NativeFunction.write_file_impl,
-            .arg_types = &[_]Value{
-                .StringKeyword,
-                .StringKeyword,
-            }
-        },
-        .{
-            .name = "ToTypescriptSource",
-            .fn_ptr = NativeFunction.to_typescript_source_impl,
-            .arg_types = &[_]Value{
-                .StringKeyword,
-                .Any,
-            }
-        },
-        .{
-            .name = "ParseInt",
-            .fn_ptr = NativeFunction.parse_int_impl,
-            .arg_types = &[_]Value{
-                .StringKeyword,
-            }
-        },
-        .{
-            .name = "Panic",
-            .fn_ptr = NativeFunction.panic_impl,
-            .arg_types = &[_]Value{
-                .Any,
-            }
-        },
-        .{
-            .name = "RequestAnimFrame",
-            .fn_ptr = NativeFunction.request_anim_frame_impl,
-            .arg_types = &[_]Value{
-                .Any,
-            }
-        },
-        .{
-            .name = "Rand",
-            .fn_ptr = NativeFunction.rand_impl,
-            .arg_types = &[_]Value{
-                .NumberKeyword,
-                .NumberKeyword,
-            }
-        },
+        .{ .name = "AssertEq", .fn_ptr = NativeFunction.assert_eq_impl, .arg_types = &[_]Value{ .Any, .Any } },
+        .{ .name = "Print", .fn_ptr = NativeFunction.print_impl, .arg_types = &[_]Value{
+            .Any,
+        } },
+        .{ .name = "WriteFile", .fn_ptr = NativeFunction.write_file_impl, .arg_types = &[_]Value{
+            .StringKeyword,
+            .StringKeyword,
+        } },
+        .{ .name = "ToTypescriptSource", .fn_ptr = NativeFunction.to_typescript_source_impl, .arg_types = &[_]Value{
+            .StringKeyword,
+            .Any,
+        } },
+        .{ .name = "ParseInt", .fn_ptr = NativeFunction.parse_int_impl, .arg_types = &[_]Value{
+            .StringKeyword,
+        } },
+        .{ .name = "Panic", .fn_ptr = NativeFunction.panic_impl, .arg_types = &[_]Value{
+            .Any,
+        } },
+        .{ .name = "RequestAnimFrame", .fn_ptr = NativeFunction.request_anim_frame_impl, .arg_types = &[_]Value{
+            .Any,
+        } },
+        .{ .name = "Rand", .fn_ptr = NativeFunction.rand_impl, .arg_types = &[_]Value{
+            .NumberKeyword,
+            .NumberKeyword,
+        } },
     };
 
     for (native_fns) |native_fn| {
@@ -204,7 +164,7 @@ pub fn run(self: *VM, function: *const Function) !void {
     });
 
     var frame: *CallFrame = &self.call_frames[self.call_frames_count - 1];
-    
+
     while (true) {
         const op: Op = @enumFromInt(frame.read_byte());
         if (comptime TRACING) {
@@ -218,9 +178,9 @@ pub fn run(self: *VM, function: *const Function) !void {
                 print("    {?}\n", .{self.stack[i]});
                 // self.stack[i].debug(debug_alloc.allocator(), "    ") catch @panic("OOM");
             }
-            print("({s}) OP: {s}\n", .{fn_name.as_str(), @tagName(op)});
+            print("({s}) OP: {s}\n", .{ fn_name.as_str(), @tagName(op) });
         }
-        
+
         switch (op) {
             .Add => {
                 const b = self.pop();
@@ -417,7 +377,7 @@ pub fn run(self: *VM, function: *const Function) !void {
             .MakeObj => {
                 const count = frame.read_byte();
                 const fields_base: [*]Value = self.stack_top - count * 2;
-                const fields = fields_base[0..count*2];
+                const fields = fields_base[0 .. count * 2];
 
                 const obj = try Object.new(std.heap.c_allocator, fields);
                 self.pop_n(count * 2);
@@ -465,14 +425,14 @@ pub fn run(self: *VM, function: *const Function) !void {
                 self.pop_n(arg_count);
                 self.push(value);
             },
-            .Exit => { 
+            .Exit => {
                 self.call_frames_count -= 1;
                 return;
             },
-            else => { 
+            else => {
                 print("Unhandled op name: {s}\n", .{@tagName(op)});
                 @panic("Unhandled op.");
-            }
+            },
         }
     }
 }
@@ -486,19 +446,18 @@ fn call_native(self: *VM, fn_name: ConstantTableIdx, args: []const Value) void {
     _ = args;
     _ = fn_name;
     _ = self;
-
 }
 
 /// Typescript's "extends" is a terrible name, but kept here for consistency's sake.
 /// A better term is "subtype". First think of types as sets. For example,
 /// `string` is a set of every possible string type: "foo", "bar", "sldsad", and
-/// so on. 
-/// 
+/// so on.
+///
 /// When we say `A subtypes B`, we are actually saying `A is a subset of
 /// B`. For example: "foo" subtypes `string`.
 fn extends(self: *VM, a: Value, b: Value) bool {
-    if (b == .Any or a == .Any) { 
-        return true; 
+    if (b == .Any or a == .Any) {
+        return true;
     }
     if (b == .Undefined) return a == .Undefined;
     if (b == .NumberKeyword) return @as(ValueKind, a) == ValueKind.Number or @as(ValueKind, a) == ValueKind.NumberKeyword;
@@ -516,10 +475,10 @@ fn extends(self: *VM, a: Value, b: Value) bool {
     if (@as(ValueKind, b) == .String) return @as(ValueKind, a) == .String and a.String.ptr == b.String.ptr;
 
     if (@as(ValueKind, b) == .Array) return @as(ValueKind, a) == .Array and self.extends_array(a.Array, b.Array);
-    if (@as(ValueKind, b) == .Object) return @as(ValueKind, a) == .Object and self.extends_object(a.Object, b.Object); 
+    if (@as(ValueKind, b) == .Object) return @as(ValueKind, a) == .Object and self.extends_object(a.Object, b.Object);
 
     // TODO: Discriminant unions have slightly different subtyping logic that
-    // need to be supported. 
+    // need to be supported.
     if (@as(ValueKind, b) == .Union) return self.extends_any_of(a, b.Union.variants_slice());
     if (@as(ValueKind, a) == .Union) return self.extends_many_all(a.Union.variants_slice(), b);
 
@@ -527,10 +486,10 @@ fn extends(self: *VM, a: Value, b: Value) bool {
 }
 
 fn extends_object(self: *VM, a: Object, b: Object) bool {
-   // Everything extends the empty object: `{}`
-   if (b.len == 0) return true;
-   // If `a` has less keys than `b` then it cannot possibly subtype `b` 
-   if (a.len < b.len) return false;
+    // Everything extends the empty object: `{}`
+    if (b.len == 0) return true;
+    // If `a` has less keys than `b` then it cannot possibly subtype `b`
+    if (a.len < b.len) return false;
 
     // Now we know `a` either has the same keys as `b` or more:
     // 1. Check that each key in `b` exists in `a`
@@ -548,11 +507,11 @@ fn extends_array(self: *VM, a: Array, b: Array) bool {
     if (b.len == 0) return a.len == 0;
 
     // `b` is an `Array<T>`, so either:
-    // 1. `a` is an empty tuple [] which extends any Array<T> 
+    // 1. `a` is an empty tuple [] which extends any Array<T>
     // 2. `a` is either a tuple or regular Array<T>, in either case
     //     all of its `items` need to extend `b`'s Array type
     if (!b.is_tuple_array()) return a.len == 0 or self.extends_many_all(a.items(), b.ptr.?[0]);
-    
+
     // Now we know `b` is a tuple. Then `a` extends `b` if `a` is a tuple of the same size
     // with each item extending the corresponding item in `b`
 
@@ -598,14 +557,14 @@ fn index_value(self: *VM, object: Value, index: Value) Value {
                     // TODO:
                     unreachable;
                 },
-                // TODO: 
+                // TODO:
                 else => unreachable,
             }
         },
         .String => |str| {
             _ = str;
             if (@as(ValueKind, index) == ValueKind.Number) return .StringKeyword;
-            // TODO: 
+            // TODO:
             unreachable;
         },
         .Union => |uni| {
@@ -616,11 +575,11 @@ fn index_value(self: *VM, object: Value, index: Value) Value {
             // ```typescript
             // type Union = { type: 'foo', data: string } | { type: 'bar', data: number }
             //
-            // 
+            //
             // type result = Union['type']  // 'foo' | 'bar'
             // type result2 = Union['data'] // string | number
             // ```
-            // 
+            //
             unreachable;
         },
         else => return .Any,
@@ -655,7 +614,7 @@ fn update_object(self: *VM, alloc: Allocator, base: Object, additional: Object) 
 
         actual_len = i;
     }
-    var actual_new_fields = new_fields[0..actual_len];
+    const actual_new_fields = new_fields[0..actual_len];
     std.sort.block(Object.Field, actual_new_fields, {}, Object.Field.less_than_key);
 
     var object: Object = .{
@@ -711,7 +670,7 @@ fn make_union(self: *VM, alloc: Allocator, variants: []const Value) !Value {
     };
 
     const discriminant_key: ?String = discriminant_key: {
-        if (all_objects)  {
+        if (all_objects) {
             // Check 2-4
             const variants_len = variants_list.items.len;
 
@@ -721,7 +680,6 @@ fn make_union(self: *VM, alloc: Allocator, variants: []const Value) !Value {
             for (variants_list.items) |variant| {
                 const obj: Object = variant.Object;
                 for (obj.fields_slice()) |*field| {
-
                     const value = key_counts.getPtr(field.name.ptr) orelse {
                         if (field.value.as_literal() == null) continue;
                         try key_counts.put(field.name.ptr, .{ .count = 1, .len = field.name.len });
@@ -743,7 +701,7 @@ fn make_union(self: *VM, alloc: Allocator, variants: []const Value) !Value {
                     // If there is more than one key that matches the conditions for
                     // a discriminant key, then all fail.
                     if (possible_tag_key != null) break :discriminant_key null;
-                    possible_tag_key = . { .ptr = entry.key_ptr.*, .len = entry.value_ptr.len };
+                    possible_tag_key = .{ .ptr = entry.key_ptr.*, .len = entry.value_ptr.len };
                 }
             }
 
@@ -752,7 +710,7 @@ fn make_union(self: *VM, alloc: Allocator, variants: []const Value) !Value {
         break :discriminant_key null;
     };
 
-    var union_ptr = try alloc.create(Union);
+    const union_ptr = try alloc.create(Union);
     union_ptr.* = .{
         .variants = variants_list.items.ptr,
         .len = @intCast(variants_list.items.len),
@@ -798,7 +756,7 @@ fn make_array_spread(self: *VM, count: u32, spread_bitfield: u256) !void {
             std.debug.assert(@as(ValueKind, val) == ValueKind.Array);
             total += val.Array.len;
         }
-        
+
         break :size total;
     };
 
@@ -810,7 +768,7 @@ fn make_array_spread(self: *VM, count: u32, spread_bitfield: u256) !void {
 
     var ptr = try std.heap.c_allocator.alloc(Value, total_size);
 
-    var prev: usize = 0; 
+    var prev: usize = 0;
     var iter = bitset.iterator(.{});
     var i: usize = 0;
     while (iter.next()) |idx| {
@@ -827,13 +785,13 @@ fn make_array_spread(self: *VM, count: u32, spread_bitfield: u256) !void {
             const end = idx;
 
             const len = end - start;
-            @memcpy(ptr[i..i + len], array_args_base[start..end]);
+            @memcpy(ptr[i .. i + len], array_args_base[start..end]);
             i += len;
         }
 
         const val: Value = array_args_base[idx];
         std.debug.assert(@as(ValueKind, val) == ValueKind.Array);
-        @memcpy(ptr[i..i + val.Array.len], val.Array.items());
+        @memcpy(ptr[i .. i + val.Array.len], val.Array.items());
 
         i += val.Array.len;
         prev = idx + 1;
@@ -846,13 +804,13 @@ fn make_array_spread(self: *VM, count: u32, spread_bitfield: u256) !void {
     // + ^ + + ^ + +
     if (prev < count) {
         const len = count - prev;
-        @memcpy(ptr[i..i + len], array_args_base[prev..count]);
+        @memcpy(ptr[i .. i + len], array_args_base[prev..count]);
     }
 
-    const arr = Array {
+    const arr = Array{
         .ptr = ptr.ptr,
         .len = total_size,
-        .flags = Array.Flags {
+        .flags = Array.Flags{
             .is_tuple = true,
         },
     };
@@ -876,9 +834,7 @@ fn call_main(self: *VM, main_name: ConstantTableIdx) !void {
     self.push(.Any);
     // TODO: read args from stdout
     try self.make_array(true, count);
-    std.debug.assert(
-        @as(ValueKind, (self.stack_top - 1)[0]) == ValueKind.Array
-    );
+    std.debug.assert(@as(ValueKind, (self.stack_top - 1)[0]) == ValueKind.Array);
     self.call(count, main_name, false);
 }
 
@@ -916,21 +872,13 @@ fn call(self: *VM, arg_count: u8, fn_name: ConstantTableIdx, tail_call: bool) vo
 
         self.stack_top = old_slots + arg_count;
 
-        current_call_frame.* = .{
-            .func = new_func,
-            .ip = new_func.code.ptr,
-            .slots = old_slots
-        };
+        current_call_frame.* = .{ .func = new_func, .ip = new_func.code.ptr, .slots = old_slots };
         return;
     }
 
     // 0 1 2 3 (4) 5 6 7 8 (9)
     const func: *const Function = self.functions.getPtr(fn_name).?;
-    self.push_call_frame(.{
-        .func = func,
-        .ip = func.code.ptr,
-        .slots = self.stack_top - arg_count
-    });
+    self.push_call_frame(.{ .func = func, .ip = func.code.ptr, .slots = self.stack_top - arg_count });
 }
 
 inline fn cur_call_frame(self: *VM) *CallFrame {
@@ -967,9 +915,9 @@ fn push_call_frame(self: *VM, call_frame: CallFrame) void {
 fn read_constant(self: *const VM, idx: ConstantTableIdx) Value {
     const constant_entry = self.constant_table[idx.v];
     return switch (constant_entry.kind) {
-        .Bool => .{.Bool = self.read_constant_boolean(constant_entry.idx)},
-        .Number => .{.Number = self.read_constant_number(constant_entry.idx)},
-        .String => .{.String = self.read_constant_string(constant_entry.idx)},
+        .Bool => .{ .Bool = self.read_constant_boolean(constant_entry.idx) },
+        .Number => .{ .Number = self.read_constant_number(constant_entry.idx) },
+        .String => .{ .String = self.read_constant_string(constant_entry.idx) },
     };
 }
 
@@ -1005,7 +953,7 @@ const Bytecode = struct {
         pool_padding: u32,
     };
 
-    const FunctionsHeader = extern struct{
+    const FunctionsHeader = extern struct {
         table_len: u32 align(8),
         table_offset: u32,
         function_code_size: u32,
@@ -1019,10 +967,7 @@ const Bytecode = struct {
     };
 };
 
-const ConstantString = extern struct {
-    len: u32 align(8),
-    ptr: [*]const u8
-};
+const ConstantString = extern struct { len: u32 align(8), ptr: [*]const u8 };
 
 const ConstantTableIdx = extern struct {
     v: u32,
@@ -1039,11 +984,7 @@ const ConstantIdx = extern struct {
     }
 };
 
-pub const ConstantKind = enum(u32) {
-    Bool,
-    Number,
-    String
-};
+pub const ConstantKind = enum(u32) { Bool, Number, String };
 
 const ConstantTableEntry = extern struct {
     idx: ConstantIdx align(8),
@@ -1051,7 +992,7 @@ const ConstantTableEntry = extern struct {
 };
 
 const CallFrame = struct {
-    ip: [*]const u8, 
+    ip: [*]const u8,
     /// Pointer into VM's value stack at the first slot this function can run
     slots: [*]Value,
     func: *const Function,
@@ -1070,7 +1011,7 @@ const CallFrame = struct {
 
     fn read_int(self: *CallFrame, comptime T: type) T {
         const byte_amount = comptime @divExact(@typeInfo(T).Int.bits, 8);
-        const val = std.mem.readIntLittle(T, @ptrCast(self.ip[0..byte_amount]));
+        const val = std.mem.readInt(T, @ptrCast(self.ip[0..byte_amount]), .little);
         self.ip += byte_amount;
         return val;
     }
@@ -1106,7 +1047,7 @@ pub const Function = struct {
 
     pub fn read_int(self: *const Function, comptime T: type, i: *usize) T {
         const byte_amount = comptime @divExact(@typeInfo(T).Int.bits, 8);
-        const val = std.mem.readIntLittle(T, @ptrCast(self.code[i.*..i.* + byte_amount]));
+        const val = std.mem.readIntLittle(T, @ptrCast(self.code[i.* .. i.* + byte_amount]));
         i.* = i.* + byte_amount;
         return val;
     }
@@ -1142,7 +1083,7 @@ pub const Function = struct {
             switch (op) {
                 .CallMain => {
                     const idx = self.read_constant_table_idx(&i);
-                    std.debug.print("{} CallMain {s}\n", .{j, vm.read_constant(idx).String.as_str() });
+                    std.debug.print("{} CallMain {s}\n", .{ j, vm.read_constant(idx).String.as_str() });
                 },
                 .Lte => {
                     std.debug.print("{} Lte\n", .{j});
@@ -1198,15 +1139,15 @@ pub const Function = struct {
                 .Intersect => {
                     const count = self.code[i];
                     i += 1;
-                    std.debug.print("{} INTERSECT: {}\n", .{j, count});
+                    std.debug.print("{} INTERSECT: {}\n", .{ j, count });
                 },
                 .Union => {
                     const count = self.read_u8(&i);
-                    std.debug.print("{} Union: {d}\n", .{j, count});
+                    std.debug.print("{} Union: {d}\n", .{ j, count });
                 },
                 .Constant => {
                     const idx = self.read_constant_table_idx(&i);
-                    std.debug.print("{} CONST: {any}\n", .{j, vm.read_constant(idx)});
+                    std.debug.print("{} CONST: {any}\n", .{ j, vm.read_constant(idx) });
                 },
                 .Pop => {
                     std.debug.print("{} POP\n", .{j});
@@ -1215,29 +1156,29 @@ pub const Function = struct {
                     const count = self.code[i];
                     i += 1;
                     const name_idx = self.read_constant_table_idx(&i);
-                    std.debug.print("{} {?} {?} {s}\n", .{j, op, count, vm.read_constant(name_idx).String.as_str()});
+                    std.debug.print("{} {?} {?} {s}\n", .{ j, op, count, vm.read_constant(name_idx).String.as_str() });
                 },
                 .SetLocal => {
                     const idx = self.code[i];
                     i += 1;
-                    std.debug.print("{} Set local {?}\n", .{j, idx});
+                    std.debug.print("{} Set local {?}\n", .{ j, idx });
                 },
                 .GetLocal => {
                     const idx = self.code[i];
                     i += 1;
-                    std.debug.print("{} Get local {?}\n", .{j, idx});
+                    std.debug.print("{} Get local {?}\n", .{ j, idx });
                 },
                 .SetGlobal => {
                     const idx = self.read_constant_table_idx(&i);
-                    std.debug.print("{} SET GLOBAL {s}\n", .{j, vm.read_constant(idx).String.as_str()});
+                    std.debug.print("{} SET GLOBAL {s}\n", .{ j, vm.read_constant(idx).String.as_str() });
                 },
                 .SetInitialState => {
                     const idx = self.read_constant_table_idx(&i);
-                    std.debug.print("{} SetInitialState {s}\n", .{j, vm.read_constant(idx).String.as_str()});
+                    std.debug.print("{} SetInitialState {s}\n", .{ j, vm.read_constant(idx).String.as_str() });
                 },
                 .GetGlobal => {
                     const idx = self.read_constant_table_idx(&i);
-                    std.debug.print("{} GET GLOBAL {s}\n", .{j, vm.read_constant(idx).String.as_str()});
+                    std.debug.print("{} GET GLOBAL {s}\n", .{ j, vm.read_constant(idx).String.as_str() });
                 },
                 .PanicExtends => {
                     std.debug.print("{} PanicExtends\n", .{j});
@@ -1245,19 +1186,19 @@ pub const Function = struct {
                 .Extends, .ExtendsTrue, .ExtendsNoPopLeft => {
                     const skip_then = @as(u16, @intCast(self.code[i + 1])) << 8 | @as(u16, @intCast(self.code[i]));
                     i += 2;
-                    std.debug.print("{} {?} (skip_then={})\n", .{j, op, skip_then});
+                    std.debug.print("{} {?} (skip_then={})\n", .{ j, op, skip_then });
                 },
                 .Jump => {
                     const offset = @as(u16, @intCast(self.code[i + 1])) << 8 | @as(u16, @intCast(self.code[i]));
                     i += 2;
-                    std.debug.print("{} JUMP {}\n", .{j, offset});
+                    std.debug.print("{} JUMP {}\n", .{ j, offset });
                 },
                 .PopCallFrame => {
                     std.debug.print("{} POP CALL FRAME\n", .{j});
                 },
                 .MakeObj => {
                     const count = self.read_u8(&i);
-                    std.debug.print("{} Make obj {?}\n", .{j, count});
+                    std.debug.print("{} Make obj {?}\n", .{ j, count });
                 },
                 .MakeArray => {
                     std.debug.print("{} MakeArray\n", .{j});
@@ -1267,24 +1208,24 @@ pub const Function = struct {
                 },
                 .MakeTuple => {
                     const count = self.read_u8(&i);
-                    std.debug.print("{} MakeTuple {d}\n", .{j, count});
+                    std.debug.print("{} MakeTuple {d}\n", .{ j, count });
                 },
                 .MakeTupleSpread => {
                     const count = self.read_u8(&i);
                     const spread_bitfield = self.read_u256(&i);
-                    std.debug.print("{} MakeTupleSpread {d} {d}\n", .{j, count, spread_bitfield});
+                    std.debug.print("{} MakeTupleSpread {d} {d}\n", .{ j, count, spread_bitfield });
                 },
                 .Index => {
                     std.debug.print("{} Index\n", .{j});
                 },
                 .IndexLit => {
                     const constant = self.read_constant_table_idx(&i);
-                    std.debug.print("{} IndexLit {?}\n", .{j, constant});
+                    std.debug.print("{} IndexLit {?}\n", .{ j, constant });
                 },
                 .FormatString => {
                     const count = self.code[i];
                     i += 1;
-                    std.debug.print("{} FormatString {?}\n", .{j, count});
+                    std.debug.print("{} FormatString {?}\n", .{ j, count });
                 },
                 .Negate => {
                     std.debug.print("{} Negate\n", .{j});
@@ -1299,11 +1240,11 @@ pub const Function = struct {
                     const count = self.read_u8(&i);
                     const name_idx = self.read_constant_table_idx(&i);
                     const str = vm.read_constant(name_idx);
-                    std.debug.print("{} CallNative {s} {d}\n", .{j, str.String.as_str(), count});
+                    std.debug.print("{} CallNative {s} {d}\n", .{ j, str.String.as_str(), count });
                 },
-                else => { 
-                    print("UNHANDLED: {s}\n", .{ @tagName(op) });
-                    @panic("Unimplemented: "); 
+                else => {
+                    print("UNHANDLED: {s}\n", .{@tagName(op)});
+                    @panic("Unimplemented: ");
                 },
             }
         }
@@ -1342,7 +1283,7 @@ pub const Function = struct {
     // }
 
     // pub fn disasseble_instruction_with_operands(self: *const Function, op: Op, offset: usize, comptime operands: usize) usize {
-        
+
     // }
 };
 
@@ -1420,7 +1361,7 @@ const NativeFunction = struct {
         // defer buf.deinit(std.heap.c_allocator);
         try vm.globals.put(vm.initial_state_index.?, arg);
         try drawCommandsValue.serialize_to_json(std.heap.c_allocator, &buf);
-        
+
         raf.request_anim_frame(buf.items.ptr, buf.items.len, buf.capacity);
 
         return Value.Any;
@@ -1519,7 +1460,7 @@ const Literal = union(enum) {
     String: String,
 };
 
-pub const Value = union(ValueKind){
+pub const Value = union(ValueKind) {
     Any,
     Undefined,
     NumberKeyword,
@@ -1563,9 +1504,7 @@ pub const Value = union(ValueKind){
     }
 
     fn array(value: Array) Value {
-        return .{
-            .Array = value
-        };
+        return .{ .Array = value };
     }
 
     fn number(value: f64) Value {
@@ -1584,7 +1523,7 @@ pub const Value = union(ValueKind){
         var buf = std.ArrayListUnmanaged(u8){};
         defer buf.deinit(alloc);
         try self.encode_as_string(alloc, &buf, true);
-        print("{s}: {s}\n", .{str, buf.items.ptr[0..buf.items.len]});
+        print("{s}: {s}\n", .{ str, buf.items.ptr[0..buf.items.len] });
     }
 
     fn serialize_to_json(self: Value, alloc: Allocator, buf: *std.ArrayListUnmanaged(u8)) !void {
@@ -1597,17 +1536,17 @@ pub const Value = union(ValueKind){
             },
             .NumberKeyword => {
                 try write_str_expand(alloc, buf, "{{\"type\": \"keyword\",\"value\":\"number\"}}", .{});
-            }, 
+            },
             .BoolKeyword => {
                 try write_str_expand(alloc, buf, "{{\"type\": \"keyword\",\"value\":\"boolean\"}}", .{});
-            }, 
+            },
             .StringKeyword => {
                 try write_str_expand(alloc, buf, "{{\"type\": \"keyword\",\"value\":\"string\"}}", .{});
             },
             .ObjectKeyword => {
                 try write_str_expand(alloc, buf, "{{\"type\": \"keyword\",\"value\":\"object\"}}", .{});
             },
-            .String => |v|{
+            .String => |v| {
                 var str_buf = std.ArrayList(u8).init(alloc);
                 defer str_buf.deinit();
                 try write_str_expand(alloc, buf, "\"{s}\"", .{try json_escaped(v.as_str(), &str_buf)});
@@ -1659,11 +1598,10 @@ pub const Value = union(ValueKind){
                     try variant.serialize_to_json(alloc, buf);
                     if (i != last) {
                         try write_str_expand(alloc, buf, " | ", .{});
-                    } 
+                    }
                 }
-            }
+            },
         }
-
     }
 
     fn encode_as_string(self: Value, alloc: Allocator, buf: *std.ArrayListUnmanaged(u8), format: bool) !void {
@@ -1676,17 +1614,17 @@ pub const Value = union(ValueKind){
             },
             .NumberKeyword => {
                 try write_str_expand(alloc, buf, "number", .{});
-            }, 
+            },
             .BoolKeyword => {
                 try write_str_expand(alloc, buf, "bool", .{});
-            }, 
+            },
             .StringKeyword => {
                 try write_str_expand(alloc, buf, "string", .{});
             },
             .ObjectKeyword => {
                 try write_str_expand(alloc, buf, "object", .{});
             },
-            .String => |v|{
+            .String => |v| {
                 if (format) {
                     try write_str_expand(alloc, buf, "{s}", .{v.as_str()});
                 } else {
@@ -1743,9 +1681,9 @@ pub const Value = union(ValueKind){
                     try variant.encode_as_string(alloc, buf, format);
                     if (i != last) {
                         try write_str_expand(alloc, buf, " | ", .{});
-                    } 
+                    }
                 }
-            }
+            },
         }
     }
 };
@@ -1753,7 +1691,7 @@ pub const Value = union(ValueKind){
 fn write_str_expand(alloc: Allocator, buf: *std.ArrayListUnmanaged(u8), comptime fmt: []const u8, args: anytype) !void {
     const len: usize = @intCast(std.fmt.count(fmt, args));
     try buf.ensureUnusedCapacity(alloc, len);
-    var insertion_slice = buf.items.ptr[buf.items.len..buf.items.len + len];
+    const insertion_slice = buf.items.ptr[buf.items.len .. buf.items.len + len];
     _ = try std.fmt.bufPrint(insertion_slice, fmt, args);
     buf.items.len += len;
 }
@@ -1796,7 +1734,7 @@ const Array = struct {
         var ptr = try alloc.alloc(Value, values.len + spread.len);
 
         if (values.len > 0) @memcpy(ptr[0..values.len], values);
-        if (spread.len > 0) @memcpy(ptr[values.len..values.len + spread.len], spread);
+        if (spread.len > 0) @memcpy(ptr[values.len .. values.len + spread.len], spread);
 
         return .{
             .ptr = @ptrCast(ptr),
@@ -1836,7 +1774,7 @@ const Array = struct {
 
 /// INVARIANTS:
 /// - `fields` are ordered lexographically by key
-const Object = struct { 
+const Object = struct {
     fields: ?[*]Field,
     len: u32,
 
@@ -1847,7 +1785,7 @@ const Object = struct {
         pub fn cmp_key(a: *const Field, b: *const Field) Order {
             return String.cmp(&a.name, &b.name);
         }
-        
+
         pub fn less_than_key(_: void, a: Field, b: Field) bool {
             return Field.cmp_key(&a, &b) == .Less;
         }
@@ -1862,8 +1800,8 @@ const Object = struct {
         var i: usize = 0;
         var j: usize = 1;
         while (j < self.len) {
-            if (fields[i].name.ptr == fields[j].name.ptr) { 
-                print("{d}: {s} == {d}: {s}\n", .{i, fields[i].name.as_str(), j, fields[j].name.as_str()});
+            if (fields[i].name.ptr == fields[j].name.ptr) {
+                print("{d}: {s} == {d}: {s}\n", .{ i, fields[i].name.as_str(), j, fields[j].name.as_str() });
                 @panic("Duplicate keys!");
             }
             i += 1;
@@ -1874,7 +1812,7 @@ const Object = struct {
     pub fn new(alloc: Allocator, fields: []const Value) !Object {
         std.debug.assert(fields.len % 2 == 0);
 
-        var object_fields = try alloc.alloc(Field, fields.len / 2);
+        const object_fields = try alloc.alloc(Field, fields.len / 2);
 
         var i: usize = 0;
         for (object_fields) |*f| {
@@ -1885,10 +1823,7 @@ const Object = struct {
 
         std.sort.block(Object.Field, object_fields, {}, Field.less_than_key);
 
-        var object: Object = .{
-            .fields = object_fields.ptr,
-            .len = @intCast(fields.len / 2)
-        };
+        var object: Object = .{ .fields = object_fields.ptr, .len = @intCast(fields.len / 2) };
 
         object.panic_on_duplicate_keys();
 
@@ -1926,7 +1861,7 @@ const Object = struct {
 
 /// INVARIANTS:
 /// - `len` must always be >= 2, otherwise its not a union
-/// - `variants` is always **flat**, meaning no Value in `variants` will be a Union. 
+/// - `variants` is always **flat**, meaning no Value in `variants` will be a Union.
 ///    This ensures that normalizing unions is cheap.
 const Union = struct {
     variants: [*]Value,
@@ -1944,7 +1879,7 @@ pub const Order = enum {
     Greater,
 };
 
-pub fn binary_search(comptime T: type, arr: []const T, search_elem: *const T, comptime cmp: fn(*const T, *const T) Order) ?usize {
+pub fn binary_search(comptime T: type, arr: []const T, search_elem: *const T, comptime cmp: fn (*const T, *const T) Order) ?usize {
     var size: usize = arr.len;
     var left: usize = 0;
     var right: usize = size;
@@ -2001,7 +1936,7 @@ pub fn json_escaped(str: []const u8, buf: *std.ArrayList(u8)) ![]const u8 {
 
 test "count spread" {
     std.debug.print("HIHIIJKJLKJFD\n", .{});
-    const args = &[_]u8{1, 1, 1, 1, 12, 1, 42, 1, 69};
+    const args = &[_]u8{ 1, 1, 1, 1, 12, 1, 42, 1, 69 };
     const spread_bitfield: u256 = 0b101010000;
 
     const count = args.len;
@@ -2022,7 +1957,7 @@ test "count spread" {
 
         break :size total;
     };
-    std.debug.print("SIZE: {d}\n", .{ total_size });
+    std.debug.print("SIZE: {d}\n", .{total_size});
     const manual_size = manual: {
         var i: usize = 0;
         for (args) |a| {

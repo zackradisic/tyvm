@@ -3,15 +3,12 @@ const VM = @import("./vm.zig");
 const Compiler = @import("./compiler.zig");
 
 pub fn main() !void {
-    var file = try std.fs.cwd().openFile("./test/flap2.ts", .{});
+    var file = try std.fs.cwd().openFile("./test/fib.ts", .{});
     defer file.close();
     const source_bytes = try file.readToEndAlloc(std.heap.c_allocator, std.math.maxInt(u32));
     defer std.heap.c_allocator.free(source_bytes);
 
-    const source: Compiler.Source = .{
-        .ptr = source_bytes.ptr,
-        .len = source_bytes.len
-    };
+    const source: Compiler.Source = .{ .ptr = source_bytes.ptr, .len = source_bytes.len };
 
     const bytecode: Compiler.Bytecode = Compiler.compile(source);
     defer Compiler.bytecode_free(bytecode);
