@@ -1,7 +1,9 @@
 const std = @import("std");
 const raf = @import("raf.zig");
+const tyvm = @import("./tyvm.zig");
 
 const print = std.debug.print;
+const trace = tyvm.logger(.TRACE, true);
 
 const HashMap = std.AutoHashMap;
 const StringHashMap = std.StringArrayHashMap;
@@ -67,7 +69,7 @@ fn load_bytecode(self: *VM, bytecode: []const u8) !void {
     }
     const constants_header: *const Bytecode.ConstantsHeader = @ptrCast(@alignCast(bytecode.ptr + header.constants_offset));
     const functions_header: *const Bytecode.FunctionsHeader = @ptrCast(@alignCast(bytecode.ptr + header.functions_offset));
-    std.debug.assert(functions_header.function_code_padding == 0);
+    tyvm.debug_assert(functions_header.function_code_padding == 0);
 
     const constant_table_raw_ptr: [*]const ConstantTableEntry = @ptrCast(@alignCast(bytecode.ptr + header.constants_offset + @sizeOf(Bytecode.ConstantsHeader)));
     const constant_table: []const ConstantTableEntry = constant_table_raw_ptr[0 .. constants_header.table_len / @sizeOf(ConstantTableEntry)];
@@ -740,7 +742,7 @@ pub fn make_string_from_slice(self: *VM, slice: []const u8) !String {
 
 fn make_array_spread(self: *VM, count: u32, spread_bitfield: u256) !void {
     const spread_count = @popCount(spread_bitfield);
-    std.debug.assert(spread_count > 0);
+    tyvm.debug_assert(spread_count > 0);
 
     var bitset = std.bit_set.IntegerBitSet(256).initEmpty();
     bitset.mask = spread_bitfield;
@@ -753,7 +755,7 @@ fn make_array_spread(self: *VM, count: u32, spread_bitfield: u256) !void {
         var iter = bitset.iterator(.{});
         while (iter.next()) |idx| {
             const val: Value = array_args_base[idx];
-            std.debug.assert(@as(ValueKind, val) == ValueKind.Array);
+            tyvm.debug_assert(@as(ValueKind, val) == ValueKind.Array);
             total += val.Array.len;
         }
 
@@ -790,7 +792,7 @@ fn make_array_spread(self: *VM, count: u32, spread_bitfield: u256) !void {
         }
 
         const val: Value = array_args_base[idx];
-        std.debug.assert(@as(ValueKind, val) == ValueKind.Array);
+        tyvm.debug_assert(@as(ValueKind, val) == ValueKind.Array);
         @memcpy(ptr[i .. i + val.Array.len], val.Array.items());
 
         i += val.Array.len;
@@ -820,7 +822,7 @@ fn make_array_spread(self: *VM, count: u32, spread_bitfield: u256) !void {
 }
 
 fn make_array(self: *VM, comptime is_tuple: bool, count: u32) !void {
-    if (!is_tuple) std.debug.assert(count == 1);
+    if (!is_tuple) tyvm.debug_assert(count == 1);
     const items_ptr = self.stack_top - count;
     const items = items_ptr[0..count];
     const array = try Array.new(std.heap.c_allocator, is_tuple, items, &[_]Value{});
@@ -834,7 +836,7 @@ fn call_main(self: *VM, main_name: ConstantTableIdx) !void {
     self.push(.Any);
     // TODO: read args from stdout
     try self.make_array(true, count);
-    std.debug.assert(@as(ValueKind, (self.stack_top - 1)[0]) == ValueKind.Array);
+    tyvm.debug_assert(@as(ValueKind, (self.stack_top - 1)[0]) == ValueKind.Array);
     self.call(count, main_name, false);
 }
 
@@ -1810,7 +1812,7 @@ const Object = struct {
     }
 
     pub fn new(alloc: Allocator, fields: []const Value) !Object {
-        std.debug.assert(fields.len % 2 == 0);
+        tyvm.debug_assert(fields.len % 2 == 0);
 
         const object_fields = try alloc.alloc(Field, fields.len / 2);
 
@@ -1935,7 +1937,6 @@ pub fn json_escaped(str: []const u8, buf: *std.ArrayList(u8)) ![]const u8 {
 }
 
 test "count spread" {
-    std.debug.print("HIHIIJKJLKJFD\n", .{});
     const args = &[_]u8{ 1, 1, 1, 1, 12, 1, 42, 1, 69 };
     const spread_bitfield: u256 = 0b101010000;
 
