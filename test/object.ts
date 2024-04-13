@@ -8,3 +8,5 @@ export type Main<Args extends string[]> = AssertEq<
   Print<Baz<Bar<{ hi: Foo<420> }>>>,
   { hi: "420: good"; nice: "wow" }
 >;
+
+type lol = Baz<Bar<{ hi: Foo<420> }>>;

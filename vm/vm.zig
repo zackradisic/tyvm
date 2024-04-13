@@ -1,18 +1,35 @@
 const std = @import("std");
+const mem = std.mem;
 const raf = @import("raf.zig");
 const tyvm = @import("./tyvm.zig");
 
 const print = std.debug.print;
-const trace = tyvm.logger(.TRACE, true);
+// const trace = tyvm.logger(.TRACE, true);
+const trace = tyvm.logger(.TRACE, false);
 
 const HashMap = std.AutoHashMap;
-const StringHashMap = std.StringArrayHashMap;
+pub fn StringMap(comptime V: type) type {
+    return std.ArrayHashMap(String, V, struct {
+        pub fn hash(self: @This(), s: String) u32 {
+            _ = self; // autofix
+            return std.array_hash_map.hashString(s.as_str());
+        }
+        pub fn eql(self: @This(), a: String, b: String, b_index: usize) bool {
+            _ = self; // autofix
+            _ = b_index; // autofix
+
+            return std.array_hash_map.eqlString(a.as_str(), b.as_str());
+        }
+    }, true);
+}
 const Allocator = std.mem.Allocator;
 
 const VM = @This();
 
+extern "c" fn memset(*anyopaque, c_int, usize) *anyopaque;
+
 // const TRACING: bool = true;
-const TRACING: bool = false;
+const TRACING: bool = true;
 
 var rnd = std.rand.DefaultPrng.init(0);
 
@@ -23,11 +40,18 @@ call_frames: [1024]CallFrame = [_]CallFrame{CallFrame.uninit()} ** 1024,
 call_frames_count: usize = 0,
 
 globals: HashMap(ConstantTableIdx, Value),
-constant_strings: std.StringArrayHashMap(ConstantTableIdx),
-interned_strings: std.StringArrayHashMap(String),
-native_functions: std.StringArrayHashMap(NativeFunction),
+
+gc: *GC,
+
+constant_strings: StringMap(ConstantTableIdx),
+interned_strings: StringMap(String),
+native_functions: StringMap(NativeFunction),
 
 /// Constant data loaded from the bytecode
+///
+/// TODO: Should we make `function` indexed by pointer instead of constant table index?
+/// As it is now, to look up a function we need to do: name (String) -> constant table idx -> function
+/// What if it were just: name -> function?
 functions: HashMap(ConstantTableIdx, Function),
 constant_table: []const ConstantTableEntry align(8),
 constant_pool: []const u8 align(8),
@@ -36,16 +60,32 @@ initial_state_index: ?ConstantTableIdx = null,
 length_string: ?ConstantTableIdx = null,
 length_string_ptr: ?[*]const u8 = null,
 
-pub fn new(alloc: Allocator, bytecode: []const u8) !VM {
+pub fn new(gc: *GC, bytecode: []const u8) !VM {
+    var items = std.ArrayList(usize).init(gc.as_allocator_no_gc());
+    try items.append(420);
+    try items.append(69);
+    try items.append(42);
+    try items.append(42);
+    try items.append(42);
+    try items.append(42);
+    try items.append(42);
+    try items.append(42);
+    try items.append(42);
+    for (items.items) |i| {
+        std.debug.print("HI: {d}\n", .{i});
+    }
     var vm: VM = .{
-        .globals = HashMap(ConstantTableIdx, Value).init(alloc),
-        .constant_strings = std.StringArrayHashMap(ConstantTableIdx).init(alloc),
-        .interned_strings = std.StringArrayHashMap(String).init(alloc),
-        .native_functions = std.StringArrayHashMap(NativeFunction).init(alloc),
+        .globals = HashMap(ConstantTableIdx, Value).init(gc.as_allocator_no_gc()),
+        .constant_strings = StringMap(ConstantTableIdx).init(gc.as_allocator_no_gc()),
+        // .interned_strings = std.StringArrayHashMap(String).init(gc.as_allocator_no_gc()),
+        .interned_strings = StringMap(String).init(gc.as_allocator_no_gc()),
+        .native_functions = StringMap(NativeFunction).init(gc.as_allocator_no_gc()),
 
-        .functions = HashMap(ConstantTableIdx, Function).init(alloc),
+        .functions = HashMap(ConstantTableIdx, Function).init(gc.as_allocator_no_gc()),
         .constant_table = undefined,
         .constant_pool = undefined,
+
+        .gc = gc,
     };
 
     try vm.load_bytecode(bytecode);
@@ -84,6 +124,11 @@ fn load_bytecode(self: *VM, bytecode: []const u8) !void {
         try self.functions.put(entry.name_constant_idx, function);
     }
 
+    var iter = self.functions.iterator();
+    while (iter.next()) |val| {
+        std.debug.print("IDX: {d}\n", .{val.key_ptr.*.v});
+    }
+
     self.is_game = header.is_game == 1;
     self.constant_pool = constant_pool;
     self.constant_table = constant_table;
@@ -95,46 +140,67 @@ fn load_bytecode(self: *VM, bytecode: []const u8) !void {
                 self.initial_state_index = ConstantTableIdx.new(@intCast(i));
             } else if (std.mem.eql(u8, str.as_str(), "length")) {
                 self.length_string = ConstantTableIdx.new(@intCast(i));
-                self.length_string_ptr = str.ptr;
+                self.length_string_ptr = str.as_str().ptr;
             }
-            try self.interned_strings.put(str.as_str(), str);
-            try self.constant_strings.put(str.as_str(), ConstantTableIdx.new(@intCast(i)));
+            try self.interned_strings.put(str, str);
+            try self.constant_strings.put(str, ConstantTableIdx.new(@intCast(i)));
         }
     }
 }
 
+pub fn const_str(comptime str: anytype) []const u8 {
+    // const buf = comptime brk: {
+    //     var buf: [str.len + 8]u8 = undefined;
+    //     @memcpy(buf[8..], str);
+    //     break :brk buf;
+    // };
+    // return buf[8..];
+
+    const DummyStruct = struct {
+        len: u32,
+        actualstr: [str.len]u8 align(8),
+
+        const DUMMY: @This() = .{ .len = @intCast(str.len), .actualstr = str.* };
+        // actualstr: [str.len]u8 = str.*,
+    };
+
+    return &DummyStruct.DUMMY.actualstr;
+}
+
 fn load_native_functions(self: *VM) !void {
     const native_fns = [_]NativeFunction{
-        .{ .name = "AssertEq", .fn_ptr = NativeFunction.assert_eq_impl, .arg_types = &[_]Value{ .Any, .Any } },
-        .{ .name = "Print", .fn_ptr = NativeFunction.print_impl, .arg_types = &[_]Value{
+        .{ .name = comptime const_str("AssertEq"), .fn_ptr = NativeFunction.assert_eq_impl, .arg_types = &[_]Value{ .Any, .Any } },
+        .{ .name = comptime const_str("Print"), .fn_ptr = NativeFunction.print_impl, .arg_types = &[_]Value{
             .Any,
         } },
-        .{ .name = "WriteFile", .fn_ptr = NativeFunction.write_file_impl, .arg_types = &[_]Value{
+        .{ .name = comptime const_str("WriteFile"), .fn_ptr = NativeFunction.write_file_impl, .arg_types = &[_]Value{
             .StringKeyword,
             .StringKeyword,
         } },
-        .{ .name = "ToTypescriptSource", .fn_ptr = NativeFunction.to_typescript_source_impl, .arg_types = &[_]Value{
+        .{ .name = comptime const_str("ToTypescriptSource"), .fn_ptr = NativeFunction.to_typescript_source_impl, .arg_types = &[_]Value{
             .StringKeyword,
             .Any,
         } },
-        .{ .name = "ParseInt", .fn_ptr = NativeFunction.parse_int_impl, .arg_types = &[_]Value{
+        .{ .name = comptime const_str("ParseInt"), .fn_ptr = NativeFunction.parse_int_impl, .arg_types = &[_]Value{
             .StringKeyword,
         } },
-        .{ .name = "Panic", .fn_ptr = NativeFunction.panic_impl, .arg_types = &[_]Value{
+        .{ .name = comptime const_str("Panic"), .fn_ptr = NativeFunction.panic_impl, .arg_types = &[_]Value{
             .Any,
         } },
-        .{ .name = "RequestAnimFrame", .fn_ptr = NativeFunction.request_anim_frame_impl, .arg_types = &[_]Value{
+        .{ .name = comptime const_str("RequestAnimFrame"), .fn_ptr = NativeFunction.request_anim_frame_impl, .arg_types = &[_]Value{
             .Any,
         } },
-        .{ .name = "Rand", .fn_ptr = NativeFunction.rand_impl, .arg_types = &[_]Value{
+        .{ .name = comptime const_str("Rand"), .fn_ptr = NativeFunction.rand_impl, .arg_types = &[_]Value{
             .NumberKeyword,
             .NumberKeyword,
         } },
     };
 
     for (native_fns) |native_fn| {
-        const name_str = try self.make_string_from_slice(native_fn.name);
-        try self.native_functions.put(name_str.as_str(), native_fn);
+        const name_str = String.from_literal(native_fn.name);
+        const name_slice = name_str.as_str();
+        trace("PUTTING: {s}", .{name_slice});
+        try self.native_functions.put(name_str, native_fn);
     }
 }
 
@@ -144,12 +210,18 @@ pub fn get_function(self: *VM, name: []const u8) ?*const Function {
     return function;
 }
 
+const GLOBAL_CONSTANT_IDX: ConstantTableIdx = ConstantTableIdx.new(0);
+const MAIN_CONSTANT_IDX: ConstantTableIdx = ConstantTableIdx.new(2);
 pub fn get_global_function(self: *VM) *const Function {
-    return self.functions.getPtr(ConstantTableIdx.new(0)).?;
+    var iter = self.functions.iterator();
+    while (iter.next()) |val| {
+        std.debug.print("IDX get_global: {d}\n", .{val.key_ptr.*.v});
+    }
+    return self.functions.getPtr(GLOBAL_CONSTANT_IDX).?;
 }
 
 pub fn get_main_function(self: *VM) ?*const Function {
-    return self.functions.getPtr(ConstantTableIdx.new(1));
+    return self.functions.getPtr(MAIN_CONSTANT_IDX);
 }
 
 pub fn init(self: *VM) !void {
@@ -157,6 +229,7 @@ pub fn init(self: *VM) !void {
 }
 
 pub fn run(self: *VM, function: *const Function) !void {
+    std.debug.print("RUNNING!\n", .{});
     self.stack_top = self.stack[0..];
 
     self.push_call_frame(.{
@@ -281,7 +354,7 @@ pub fn run(self: *VM, function: *const Function) !void {
                 self.push(.Any);
             },
             .EmptyTuple => {
-                self.push(Value.array(Array.empty_tuple()));
+                self.push(Value.array(try Array.empty_tuple(self.gc)));
             },
             .MakeArray => {
                 try self.make_array(false, 1);
@@ -364,14 +437,23 @@ pub fn run(self: *VM, function: *const Function) !void {
             },
             .FormatString => {
                 const args_count = frame.read_byte();
-                const start = self.stack_top - args_count;
+                const start: [*]Value = self.stack_top - args_count;
                 var str_array = std.ArrayListUnmanaged(u8){};
+                defer str_array.deinit(std.heap.c_allocator);
                 for (start[0..args_count]) |v_| {
                     try v_.encode_as_string(std.heap.c_allocator, &str_array, true);
                 }
                 str_array.shrinkAndFree(std.heap.c_allocator, str_array.items.len);
+                const bytes_ptr = try Bytes.alloc_heap(self.gc, str_array.items[0..]);
+                // defer bytes_ptr.deinit(self)
+                const str = try self.intern_string(String{
+                    .ptr = bytes_ptr,
+                    .len = @intCast(str_array.items.len),
+                });
+                // self.interned_strings.getO(str)
+                const str_value = Value.string(str);
                 self.pop_n(args_count);
-                self.push(Value.string(try self.make_string_from_slice(str_array.items)));
+                self.push(str_value);
             },
             .Negate => {
                 self.push(self.pop().negate());
@@ -381,7 +463,7 @@ pub fn run(self: *VM, function: *const Function) !void {
                 const fields_base: [*]Value = self.stack_top - count * 2;
                 const fields = fields_base[0 .. count * 2];
 
-                const obj = try Object.new(std.heap.c_allocator, fields);
+                const obj = try Object.new(self.gc, fields);
                 self.pop_n(count * 2);
                 self.push(Value.object(obj));
             },
@@ -404,7 +486,7 @@ pub fn run(self: *VM, function: *const Function) !void {
                 if (!self.extends(object, .ObjectKeyword) and !self.extends(addition, .ObjectKeyword)) {
                     @panic("Both LHS and RHS of Update<...> must extend `obect`");
                 }
-                const new_object = try self.update_object(std.heap.c_allocator, object.Object, addition.Object);
+                const new_object = try self.update_object(self.gc, object.Object, addition.Object);
                 self.push(new_object);
             },
             .Union => {
@@ -421,7 +503,12 @@ pub fn run(self: *VM, function: *const Function) !void {
 
                 const args = (self.stack_top - arg_count)[0..arg_count];
 
-                const native_fn = self.native_functions.getPtr(name.String.as_str()) orelse @panic("Unknown native function");
+                trace("NAME: {s}", .{name.String.as_str()});
+                var iter = self.native_functions.iterator();
+                while (iter.next()) |entry| {
+                    trace("iter NAME: {s}", .{entry.key_ptr.as_str()});
+                }
+                const native_fn = self.native_functions.getPtr(name.String) orelse @panic("Unknown native function");
                 const value = try native_fn.call(self, args);
 
                 self.pop_n(arg_count);
@@ -437,6 +524,16 @@ pub fn run(self: *VM, function: *const Function) !void {
             },
         }
     }
+}
+
+fn intern_string(self: *VM, str_: String) !String {
+    var str = str_;
+    self.gc.push_vroot(@ptrCast(&str));
+    defer self.gc.pop_vroot();
+    const result = try self.interned_strings.getOrPut(str);
+    if (result.found_existing) return result.value_ptr.*;
+    result.value_ptr.* = str;
+    return str;
 }
 
 fn eq(self: *VM, a: Value, b: Value) bool {
@@ -474,7 +571,7 @@ fn extends(self: *VM, a: Value, b: Value) bool {
     // equality. However, if we allow strings to have the same pointer (e.g.
     // "foobar" and "foo" share the same base pointer), this will obviously
     // break without a length check.
-    if (@as(ValueKind, b) == .String) return @as(ValueKind, a) == .String and a.String.ptr == b.String.ptr;
+    if (@as(ValueKind, b) == .String) return @as(ValueKind, a) == .String and @as(usize, @bitCast(a.String.ptr)) == @as(usize, @bitCast(b.String.ptr));
 
     if (@as(ValueKind, b) == .Array) return @as(ValueKind, a) == .Array and self.extends_array(a.Array, b.Array);
     if (@as(ValueKind, b) == .Object) return @as(ValueKind, a) == .Object and self.extends_object(a.Object, b.Object);
@@ -487,7 +584,7 @@ fn extends(self: *VM, a: Value, b: Value) bool {
     return false;
 }
 
-fn extends_object(self: *VM, a: Object, b: Object) bool {
+fn extends_object(self: *VM, a: *Object, b: *Object) bool {
     // Everything extends the empty object: `{}`
     if (b.len == 0) return true;
     // If `a` has less keys than `b` then it cannot possibly subtype `b`
@@ -504,7 +601,7 @@ fn extends_object(self: *VM, a: Object, b: Object) bool {
     return true;
 }
 
-fn extends_array(self: *VM, a: Array, b: Array) bool {
+fn extends_array(self: *VM, a: *Array, b: *Array) bool {
     // Empty tuple
     if (b.len == 0) return a.len == 0;
 
@@ -555,7 +652,7 @@ fn index_value(self: *VM, object: Value, index: Value) Value {
                     return arr.item_at_index(@intFromFloat(v));
                 },
                 .String => |s| {
-                    if (self.length_string_ptr != null and self.length_string_ptr == s.ptr) return Value.number(@floatFromInt(arr.len));
+                    if (self.length_string_ptr != null and self.length_string_ptr.? == s.ptr.ptrToSlice()) return Value.number(@floatFromInt(arr.len));
                     // TODO:
                     unreachable;
                 },
@@ -588,17 +685,35 @@ fn index_value(self: *VM, object: Value, index: Value) Value {
     }
 }
 
-fn update_object(self: *VM, alloc: Allocator, base: Object, additional: Object) !Value {
-    _ = self;
+fn update_object(self: *VM, gc: *GC, base_: *Object, additional_: *Object) !Value {
+    _ = self; // autofix
+    var base = base_;
+    var additional = additional_;
     if (base.len == 0 and additional.len == 0) @panic("TODO: Empty object");
+    gc.push_vroot(@ptrCast(&base));
+    gc.push_vroot(@ptrCast(&additional));
+    defer {
+        gc.pop_vroot();
+        gc.pop_vroot();
+    }
+    var object = try gc.as_allocator().create(Object);
+    object.* = .{
+        .fields = null,
+        .len = 0,
+    };
+    gc.push_vroot(@ptrCast(&object));
+    defer {
+        gc.pop_vroot();
+    }
 
     var actual_len: usize = base.len + additional.len;
-    var new_fields = try alloc.alloc(Object.Field, actual_len);
+    var new_fields = try gc.as_allocator().alloc(Object.Field, actual_len);
     if (base.len == 0) {
         @memcpy(new_fields[0..additional.len], additional.fields_slice());
     } else if (additional.len == 0) {
         @memcpy(new_fields[0..base.len], base.fields_slice());
     } else {
+        // trace("BASE {}", .{base});
         @memcpy(new_fields[0..base.len], base.fields_slice());
         var i: u32 = base.len;
         for (additional.fields_slice()) |update_field| {
@@ -619,7 +734,7 @@ fn update_object(self: *VM, alloc: Allocator, base: Object, additional: Object) 
     const actual_new_fields = new_fields[0..actual_len];
     std.sort.block(Object.Field, actual_new_fields, {}, Object.Field.less_than_key);
 
-    var object: Object = .{
+    object.* = .{
         .fields = actual_new_fields.ptr,
         .len = @intCast(actual_len),
     };
@@ -676,27 +791,27 @@ fn make_union(self: *VM, alloc: Allocator, variants: []const Value) !Value {
             // Check 2-4
             const variants_len = variants_list.items.len;
 
-            var key_counts = std.AutoArrayHashMap([*]const u8, struct { count: u8, len: u32 }).init(alloc);
+            var key_counts = StringMap(struct { count: u8, len: u32 }).init(alloc);
             defer key_counts.deinit();
 
             for (variants_list.items) |variant| {
-                const obj: Object = variant.Object;
+                const obj: *Object = variant.Object;
                 for (obj.fields_slice()) |*field| {
-                    const value = key_counts.getPtr(field.name.ptr) orelse {
+                    const value = key_counts.getPtr(field.name) orelse {
                         if (field.value.as_literal() == null) continue;
-                        try key_counts.put(field.name.ptr, .{ .count = 1, .len = field.name.len });
+                        try key_counts.put(field.name, .{ .count = 1, .len = field.name.len });
                         continue;
                     };
 
                     if (field.value.as_literal() == null) {
-                        _ = key_counts.swapRemove(field.name.ptr);
+                        _ = key_counts.swapRemove(field.name);
                     } else {
                         value.count += 1;
                     }
                 }
             }
 
-            var possible_tag_key: ?struct { ptr: [*]const u8, len: u32 } = null;
+            var possible_tag_key: ?struct { ptr: String, len: u32 } = null;
             var iter = key_counts.iterator();
             while (iter.next()) |entry| {
                 if (entry.value_ptr.count == variants_len) {
@@ -707,7 +822,7 @@ fn make_union(self: *VM, alloc: Allocator, variants: []const Value) !Value {
                 }
             }
 
-            break :discriminant_key if (possible_tag_key) |tag| .{ .ptr = tag.ptr, .len = tag.len } else null;
+            break :discriminant_key if (possible_tag_key) |tag| tag.ptr else null;
         }
         break :discriminant_key null;
     };
@@ -727,17 +842,6 @@ fn make_union_impl(self: *VM, alloc: Allocator, potential_variant: Value, existi
         if (self.extends(potential_variant, existing_variant)) return;
     }
     try existing_variants.append(alloc, potential_variant);
-}
-
-pub fn make_string_from_slice(self: *VM, slice: []const u8) !String {
-    const entry = try self.interned_strings.getOrPut(slice);
-    if (entry.found_existing) return entry.value_ptr.*;
-    const new_string: String = .{
-        .len = @intCast(slice.len),
-        .ptr = @ptrCast(slice.ptr),
-    };
-    entry.value_ptr.* = new_string;
-    return new_string;
 }
 
 fn make_array_spread(self: *VM, count: u32, spread_bitfield: u256) !void {
@@ -764,11 +868,35 @@ fn make_array_spread(self: *VM, count: u32, spread_bitfield: u256) !void {
 
     if (total_size == 0) {
         self.pop_n(count);
-        self.push(Value.array(Array.empty_tuple()));
+        self.push(Value.array(try Array.empty_tuple(self.gc)));
         return;
     }
 
-    var ptr = try std.heap.c_allocator.alloc(Value, total_size);
+    tyvm.debug_assert(self.stack[0] == .Array);
+    tyvm.debug_assert(self.stack[0].Array.len == 1);
+    // tyvm.debug_assert(self.stack[0].Array.ptr.?[0] == .);
+    var array = try self.gc.as_allocator().create(Array);
+    array.* = .{
+        .ptr = null,
+        .len = 0,
+        .flags = .{},
+    };
+    const ptrptr: **ObjHeader = @ptrCast(&array);
+    self.gc.push_vroot(ptrptr);
+    defer self.gc.pop_vroot();
+
+    trace("PTR: {d}", .{@intFromPtr(ptrptr)});
+    if (comptime tyvm.allow_assert) {
+        const cast: *GC.AnyObjHeaderPtr = @ptrCast(ptrptr);
+        tyvm.debug_assert((cast.ptr << 3) == @intFromPtr(array));
+        const from_space_ptr: *ObjHeader = @ptrFromInt(@as(usize, cast.ptr << 3));
+        tyvm.debug_assert(from_space_ptr.tag.tytag == .arr);
+    }
+
+    trace("STACK first: {}", .{self.stack[0]});
+    var ptr = try self.gc.as_allocator().alloc(Value, total_size);
+
+    trace("STACK first: {}", .{self.stack[0]});
 
     var prev: usize = 0;
     var iter = bitset.iterator(.{});
@@ -809,7 +937,7 @@ fn make_array_spread(self: *VM, count: u32, spread_bitfield: u256) !void {
         @memcpy(ptr[i .. i + len], array_args_base[prev..count]);
     }
 
-    const arr = Array{
+    array.* = Array{
         .ptr = ptr.ptr,
         .len = total_size,
         .flags = Array.Flags{
@@ -818,14 +946,14 @@ fn make_array_spread(self: *VM, count: u32, spread_bitfield: u256) !void {
     };
 
     self.pop_n(count);
-    self.push(Value.array(arr));
+    self.push(Value.array(array));
 }
 
 fn make_array(self: *VM, comptime is_tuple: bool, count: u32) !void {
     if (!is_tuple) tyvm.debug_assert(count == 1);
     const items_ptr = self.stack_top - count;
     const items = items_ptr[0..count];
-    const array = try Array.new(std.heap.c_allocator, is_tuple, items, &[_]Value{});
+    const array = try Array.new(self.gc, is_tuple, items, &[_]Value{});
 
     self.pop_n(count);
     self.push(Value.array(array));
@@ -879,6 +1007,16 @@ fn call(self: *VM, arg_count: u8, fn_name: ConstantTableIdx, tail_call: bool) vo
     }
 
     // 0 1 2 3 (4) 5 6 7 8 (9)
+    {
+        std.debug.print("PRINTING FUNCTIONS!\n", .{});
+        var iter = self.functions.iterator();
+        while (iter.next()) |val| {
+            const function = val.value_ptr;
+            const tableidx = self.constant_table[function.name.v];
+            const foo = self.read_constant_string(tableidx.idx);
+            std.debug.print("SLICE: {s}\n", .{foo.as_str()});
+        }
+    }
     const func: *const Function = self.functions.getPtr(fn_name).?;
     self.push_call_frame(.{ .func = func, .ip = func.code.ptr, .slots = self.stack_top - arg_count });
 }
@@ -896,11 +1034,13 @@ inline fn peek_ptr(self: *VM, distance: usize) *Value {
 }
 
 inline fn push(self: *VM, value: Value) void {
+    // trace("Stack push: {}", .{value});
     self.stack_top[0] = value;
     self.stack_top += 1;
 }
 
 inline fn pop(self: *VM) Value {
+    // trace("Stack pop", .{});
     self.stack_top -= 1;
     return self.stack_top[0];
 }
@@ -920,6 +1060,7 @@ fn read_constant(self: *const VM, idx: ConstantTableIdx) Value {
         .Bool => .{ .Bool = self.read_constant_boolean(constant_entry.idx) },
         .Number => .{ .Number = self.read_constant_number(constant_entry.idx) },
         .String => .{ .String = self.read_constant_string(constant_entry.idx) },
+        .Bytes => .{ .Bytes = self.read_constant_bytes(constant_entry.idx) },
     };
 }
 
@@ -933,14 +1074,44 @@ fn read_constant_number(self: *const VM, constant_idx: ConstantIdx) f64 {
 }
 
 fn read_constant_string(self: *const VM, constant_idx: ConstantIdx) String {
-    const constant_string_ptr: [*]const u8 = @ptrCast(&self.constant_pool[constant_idx.v]);
-    const len: u32 = @as(*const u32, @ptrCast(@alignCast(constant_string_ptr))).*;
-    return .{
-        .len = len,
-        .ptr = constant_string_ptr + @sizeOf(u32),
+    const ptr: *const extern struct { idx: u32 align(8), len: u32 } = @ptrCast(@alignCast(&self.constant_pool[constant_idx.v]));
+    const constant_bytes_idx: u32 = ptr.idx;
+    const slice_len: u32 = ptr.len;
+    const bytesptr = self.read_constant_bytes(ConstantIdx{ .v = constant_bytes_idx });
+    return String{
+        .ptr = bytesptr,
+        .len = slice_len,
     };
 }
 
+fn read_constant_bytes(self: *const VM, constant_idx: ConstantIdx) BytesPtr {
+    const entry = self.constant_table[constant_idx.v];
+    const constant_bytes_ptr: [*]const u8 = @ptrCast(&self.constant_pool[entry.idx.v]);
+    const actual_ptr: [*]const u8 = constant_bytes_ptr;
+    tyvm.debug_assert((@intFromPtr(actual_ptr) & 0b111) == 0);
+    return .{
+        .meta = .constant,
+        .ptrbits = @intCast(@intFromPtr(actual_ptr) >> 3),
+    };
+}
+
+/// The bytecode format is laid out like so:
+/// 1. Header
+///    - magic bytes
+///    - constant pool start offset
+///    - functions bytecode start offset
+///
+/// 2. Constant pool
+///    - comprised of a) table, b) an array of bytes which represent constants
+///    - each constant is accessed by a "constant idx", which is index into the table
+///    - the table tells you:
+///        - what type of value the constant has
+///        - where to find the constant's value in the array of bytes (the offset at which it begins)
+///
+/// 3. Functions
+///    - also contains a table (an array of FunctionTableEntry)
+///    - and then an array of functions
+///    - the table is just there to mark where to find each function and how large its bytecode is
 const Bytecode = struct {
     const Header = extern struct {
         magic: u32 align(8),
@@ -969,6 +1140,10 @@ const Bytecode = struct {
     };
 };
 
+const ConstantBytes = extern struct {
+    len: u32 align(8),
+    _pad: u32 = 0,
+};
 const ConstantString = extern struct { len: u32 align(8), ptr: [*]const u8 };
 
 const ConstantTableIdx = extern struct {
@@ -986,7 +1161,7 @@ const ConstantIdx = extern struct {
     }
 };
 
-pub const ConstantKind = enum(u32) { Bool, Number, String };
+pub const ConstantKind = enum(u32) { Bool, Number, String, Bytes };
 
 const ConstantTableEntry = extern struct {
     idx: ConstantIdx align(8),
@@ -1049,7 +1224,7 @@ pub const Function = struct {
 
     pub fn read_int(self: *const Function, comptime T: type, i: *usize) T {
         const byte_amount = comptime @divExact(@typeInfo(T).Int.bits, 8);
-        const val = std.mem.readIntLittle(T, @ptrCast(self.code[i.* .. i.* + byte_amount]));
+        const val = std.mem.readInt(T, @ptrCast(self.code[i.* .. i.* + byte_amount]), .little);
         i.* = i.* + byte_amount;
         return val;
     }
@@ -1355,7 +1530,7 @@ const NativeFunction = struct {
 
     pub fn request_anim_frame_impl(vm: *VM, args: []const Value) !Value {
         const arg = args[0];
-        const drawCommandsString = vm.interned_strings.get("drawCommands").?;
+        const drawCommandsString = vm.interned_strings.get(String.from_literal(const_str("drawCommands"))).?;
         const drawCommandsField = arg.Object.get_field(drawCommandsString).?;
         const drawCommandsValue = drawCommandsField.value;
 
@@ -1454,12 +1629,110 @@ const ValueKind = enum {
     Array,
     Object,
     Union,
+    Bytes,
 };
 
 const Literal = union(enum) {
     Number: f64,
     Bool: bool,
     String: String,
+};
+
+pub const ObjHeader = struct {
+    tag: ObjTag,
+
+    pub inline fn setForwarded(this: *ObjHeader, forwarded: bool) void {
+        this.tag.lowtag = if (forwarded) .forwarded else .none;
+    }
+
+    pub inline fn isForwarded(this: *ObjHeader) bool {
+        return this.tag.lowtag == .forwarded;
+    }
+
+    pub inline fn clearForwarded(this: ObjHeader) ObjHeader {
+        var out = this;
+        out.tag.lowtag = .none;
+        return out;
+    }
+
+    pub fn narrow(this: *ObjHeader, comptime tytag: ObjTy) *tytag.asTy() {
+        tyvm.debug_assert(this.tag.tytag == tytag);
+        const ptr: [*]u8 = @ptrCast(@alignCast(this));
+        return @ptrCast(@alignCast(ptr));
+    }
+
+    pub fn gc_move(this: *ObjHeader, gc: *GC, worklist: *GC.WorkList) !*ObjHeader {
+        return try switch (this.tag.tytag) {
+            .bytes => this.narrow(.bytes).gc_move(gc, worklist),
+            .arr => this.narrow(.arr).gc_move(gc, worklist),
+            .obj => this.narrow(.obj).gc_move(gc, worklist),
+            .@"union" => this.narrow(.@"union").gc_move(gc, worklist),
+        };
+    }
+
+    pub fn gc_scan(this: *ObjHeader, gc: *GC, worklist: *GC.WorkList) !void {
+        return try switch (this.tag.tytag) {
+            .bytes => this.narrow(.bytes).gc_scan(gc, worklist),
+            .arr => this.narrow(.arr).gc_scan(gc, worklist),
+            .obj => this.narrow(.obj).gc_scan(gc, worklist),
+            .@"union" => this.narrow(.@"union").gc_scan(gc, worklist),
+        };
+    }
+};
+
+pub const ObjTy = enum(u16) {
+    bytes = 0,
+    arr = 1,
+    obj = 2,
+    @"union" = 3,
+
+    pub fn asTy(comptime tag: ObjTy) type {
+        return switch (tag) {
+            .bytes => Bytes,
+            .arr => Array,
+            .obj => Object,
+            .@"union" => Union,
+        };
+    }
+};
+
+/// Object type tag used in ObjHeader
+/// This is word sized because it will be casted to a pointer to store the
+/// forwarding ref in GC.collect()
+/// TODO: Fix this for wasm / 32 bit targets
+pub const ObjTag = packed struct(u64) {
+    /// All underlying objects will have alignment of 8 meaning we have these
+    /// extra 3 bits to play with
+    lowtag: enum(u1) {
+        none = 0,
+        forwarded = 1,
+    },
+    is_constant: bool = false,
+    __unused: u1 = 0,
+    /// When lowtag == .none, these bits are meaningless and zeroed
+    /// When lowtag == .forwarded, these bits represent the pointer of the
+    /// allocation that has been moved
+    ptrbits: u45 = 0,
+    tytag: ObjTy,
+
+    pub fn format(this: *const ObjTag, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        try writer.print("ObjTag(lowtag={s}, is_constant={}, ptr={d}, tytag={s})", .{ @tagName(this.lowtag), this.is_constant, this.ptrbits << 3, @tagName(this.tytag) });
+    }
+
+    pub fn forwarded_ptr(this: ObjTag) *ObjHeader {
+        tyvm.debug_assert(this.lowtag == .forwarded);
+        return @ptrFromInt(@as(usize, this.ptrbits) << 3);
+    }
+
+    /// size excluding the obj tag
+    pub fn size(this: ObjTag) usize {
+        return @sizeOf(ObjHeader) - switch (this.tytag) {
+            .bytes => @sizeOf(Bytes),
+            .arr => @sizeOf(Array),
+            .obj => @sizeOf(Object),
+            .@"union" => @sizeOf(Union),
+        };
+    }
 };
 
 pub const Value = union(ValueKind) {
@@ -1473,9 +1746,48 @@ pub const Value = union(ValueKind) {
     Number: f64,
     Bool: bool,
     String: String,
-    Array: Array,
-    Object: Object,
+    Array: *Array,
+    Object: *Object,
     Union: *Union,
+    Bytes: BytesPtr,
+
+    // pub fn format(this: *const Value, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+    //     try writer.print("Value({})", .{this});
+    // }
+
+    fn as_anyobjheaderptr(self: *Value) ?*GC.AnyObjHeaderPtr {
+        const ptr = self.as_anyobjheaderptr_impl();
+        tyvm.debug_assert(ptr == null or @intFromPtr(ptr) % 8 == 0);
+        return ptr;
+    }
+
+    fn as_anyobjheaderptr_impl(self: *Value) ?*GC.AnyObjHeaderPtr {
+        return switch (self.*) {
+            .String => {
+                if (self.String.ptr.meta == .heap) return @ptrCast(&self.String.ptr);
+                return null;
+            },
+            .Array => |*v| {
+                trace("VALUE=0x{x} ARRAY=0x{x}", .{ @intFromPtr(self), @intFromPtr(v) });
+                return @ptrCast(v);
+            },
+            .Object => @ptrCast(&self.Object),
+            .Union => @ptrCast(&self.Union),
+            .Bytes => @ptrCast(&self.Bytes),
+            .Any, .Undefined, .NumberKeyword, .BoolKeyword, .StringKeyword, .ObjectKeyword, .Number, .Bool => null,
+        };
+    }
+
+    fn as_objheader(self: Value) ?*ObjHeader {
+        return switch (self) {
+            .String => @ptrCast(self.String),
+            .Array => @ptrCast(self.Array),
+            .Object => @ptrCast(self.Object),
+            .Union => @ptrCast(self.Union),
+            .Bytes => self.Bytes.asObjPtr(),
+            .Any, .Undefined, .NumberKeyword, .BoolKeyword, .StringKeyword, .ObjectKeyword, .Number, .Bool => null,
+        };
+    }
 
     fn as_literal(self: Value) ?Literal {
         return switch (self) {
@@ -1499,13 +1811,13 @@ pub const Value = union(ValueKind) {
         };
     }
 
-    fn object(value: Object) Value {
+    fn object(value: *Object) Value {
         return .{
             .Object = value,
         };
     }
 
-    fn array(value: Array) Value {
+    fn array(value: *Array) Value {
         return .{ .Array = value };
     }
 
@@ -1603,10 +1915,14 @@ pub const Value = union(ValueKind) {
                     }
                 }
             },
+            .Bytes => {
+                // try write_str_expand(alloc, buf, "Bytes", args: anytype)
+                @panic("UNIMPLEMENTED");
+            },
         }
     }
 
-    fn encode_as_string(self: Value, alloc: Allocator, buf: *std.ArrayListUnmanaged(u8), format: bool) !void {
+    fn encode_as_string(self: Value, alloc: Allocator, buf: *std.ArrayListUnmanaged(u8), is_format: bool) !void {
         switch (self) {
             .Any => {
                 try write_str_expand(alloc, buf, "any", .{});
@@ -1627,7 +1943,7 @@ pub const Value = union(ValueKind) {
                 try write_str_expand(alloc, buf, "object", .{});
             },
             .String => |v| {
-                if (format) {
+                if (is_format) {
                     try write_str_expand(alloc, buf, "{s}", .{v.as_str()});
                 } else {
                     try write_str_expand(alloc, buf, "\"{s}\"", .{v.as_str()});
@@ -1650,9 +1966,9 @@ pub const Value = union(ValueKind) {
                     for (fields[0..v.len], 0..) |field_, i| {
                         const field: Object.Field = field_;
                         try write_str_expand(alloc, buf, "    ", .{});
-                        try Value.string(field.name).encode_as_string(alloc, buf, format);
+                        try Value.string(field.name).encode_as_string(alloc, buf, is_format);
                         try write_str_expand(alloc, buf, ": ", .{});
-                        try field.value.encode_as_string(alloc, buf, format);
+                        try field.value.encode_as_string(alloc, buf, is_format);
                         if (i != last) try write_str_expand(alloc, buf, ",\n", .{});
                     }
                 }
@@ -1667,7 +1983,7 @@ pub const Value = union(ValueKind) {
                 if (v.ptr) |ptr| {
                     const last = v.len -| 1;
                     for (ptr[0..v.len], 0..) |val, i| {
-                        try val.encode_as_string(alloc, buf, format);
+                        try val.encode_as_string(alloc, buf, is_format);
                         if (i != last) try write_str_expand(alloc, buf, ", ", .{});
                     }
                 }
@@ -1680,10 +1996,25 @@ pub const Value = union(ValueKind) {
             .Union => |v| {
                 const last = v.len -| 1;
                 for (v.variants[0..v.len], 0..) |variant, i| {
-                    try variant.encode_as_string(alloc, buf, format);
+                    try variant.encode_as_string(alloc, buf, is_format);
                     if (i != last) {
                         try write_str_expand(alloc, buf, " | ", .{});
                     }
+                }
+            },
+            .Bytes => |v| {
+                const slice = v.getSlice();
+                const base64_len = std.base64.standard.Encoder.calcSize(slice.len);
+                const base64_str = try std.heap.c_allocator.alloc(u8, base64_len);
+                defer std.heap.c_allocator.free(base64_str);
+
+                const base64 = std.base64.standard.Encoder.encode(base64_str, slice);
+
+                // copy pasted from above
+                if (is_format) {
+                    try write_str_expand(alloc, buf, "{s}", .{base64});
+                } else {
+                    try write_str_expand(alloc, buf, "\"{s}\"", .{base64});
                 }
             },
         }
@@ -1698,11 +2029,169 @@ fn write_str_expand(alloc: Allocator, buf: *std.ArrayListUnmanaged(u8), comptime
     buf.items.len += len;
 }
 
+const BytesPtr = packed struct(usize) {
+    meta: enum(u3) {
+        constant = 0b100,
+        literal = 0b110,
+        heap = 0b010,
+    },
+    ptrbits: u45 = 0,
+    ___unused: u16 = 0,
+
+    pub fn deinit(this: BytesPtr, allocator: Allocator) void {
+        switch (this.meta) {
+            .constant, .literal => {},
+            .heap => {
+                const bytes: *Bytes = @ptrFromInt(@as(usize, this.ptrbits) << 3);
+                const dataptr: [*]const u8 = @ptrFromInt(@as(usize, this.ptrbits) << 3);
+                const bytes_len = bytes.len;
+                const len = @sizeOf(Bytes) + bytes_len;
+                const data = dataptr[0..len];
+                allocator.free(data);
+            },
+        }
+    }
+
+    pub fn format(this: *const BytesPtr, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        try writer.print("BytesPtr(.meta={s}, .ptr={d})", .{ @tagName(this.meta), this.ptrbits << 3 });
+    }
+
+    pub fn newLiteral(ptr: [*]const u8) BytesPtr {
+        trace("PTR: {d}", .{@intFromPtr(ptr)});
+        tyvm.debug_assert((@intFromPtr(ptr) & 0b111) == 0);
+        return BytesPtr{ .meta = .literal, .ptrbits = @intCast(@intFromPtr(ptr) >> 3) };
+    }
+
+    pub fn newConstant(ptr: [*]const u8) BytesPtr {
+        trace("PTR: {d}", .{@intFromPtr(ptr)});
+        tyvm.debug_assert((@intFromPtr(ptr) & 0b111) == 0);
+        return BytesPtr{ .meta = .constant, .ptrbits = @intCast(@intFromPtr(ptr) >> 3) };
+    }
+
+    pub fn setForwarded(this: *BytesPtr, forwarded: bool) void {
+        this.meta = forwarded;
+    }
+
+    pub fn asObjPtr(this: BytesPtr) ?*ObjHeader {
+        if (this.meta == .heap) return @ptrCast(this.__ptr());
+        return null;
+    }
+
+    pub inline fn anyPtr(this: BytesPtr) *anyopaque {
+        return @ptrFromInt(@as(usize, @intCast(@as(u64, this.ptrbits) << 3)));
+    }
+
+    pub inline fn __ptr(this: BytesPtr, comptime T: type) *T {
+        return @ptrFromInt(@as(usize, this.ptrbits) << 3);
+    }
+
+    pub inline fn ptrToSlice(this: BytesPtr) [*]const u8 {
+        return this.ptrToSliceImpl(
+            false,
+        );
+    }
+
+    pub inline fn getSlice(this: BytesPtr) []const u8 {
+        return this.ptrToSliceImpl(true);
+    }
+
+    pub inline fn ptrToSliceImpl(this: BytesPtr, comptime slice: bool) if (slice) []const u8 else [*]const u8 {
+        switch (this.meta) {
+            .constant => {
+                const constant: *ConstantBytes = this.__ptr(ConstantBytes);
+                const bytes_ptr: [*]const u8 = @as([*]const u8, @ptrCast(constant)) + @sizeOf(ConstantBytes);
+                if (comptime slice) return bytes_ptr[0..constant.len];
+                return bytes_ptr;
+            },
+            .heap => {
+                const obj_ptr: *ObjHeader = this.__ptr(ObjHeader);
+                const bytes: *Bytes = @ptrCast(obj_ptr);
+                if (comptime slice) return bytes.as_slice();
+                return bytes.as_slice_ptr();
+            },
+            .literal => {
+                const theptr: [*]const u8 = @ptrCast(this.__ptr(u8));
+                if (comptime slice) {
+                    const lenptr: *const u32 = @ptrCast(@alignCast(theptr - 8));
+                    return theptr[0..lenptr.*];
+                }
+                return theptr;
+            },
+        }
+    }
+};
+
+const Bytes = struct {
+    obj: ObjHeader = .{
+        .tag = .{ .lowtag = .none, .ptrbits = 0, .tytag = .bytes },
+    },
+    len: u32,
+    _pad: u32 = 0,
+
+    const Encoding = enum(u16) {
+        // latin1,
+        utf8,
+    };
+
+    fn alloc_heap(gc: *GC, slice: []const u8) !BytesPtr {
+        const heap = try gc.as_allocator().alloc(u8, @sizeOf(Bytes) + slice.len);
+        const bytes: *Bytes = @ptrCast(@alignCast(heap.ptr));
+        bytes.* = .{
+            .len = @intCast(slice.len),
+        };
+        const heap_slice: [*]u8 = @ptrCast(heap.ptr + @sizeOf(Bytes));
+        @memcpy(heap_slice[0..slice.len], slice);
+        tyvm.debug_assert((@intFromPtr(bytes) & 0b111) == 0);
+        return BytesPtr{
+            .meta = .heap,
+            .ptrbits = @intCast(@intFromPtr(bytes) >> 3),
+        };
+    }
+
+    inline fn as_slice_ptr(this: *Bytes) [*]const u8 {
+        const ptr_start = @as([*]const u8, @ptrCast(this)) + @sizeOf(Bytes);
+        return ptr_start;
+    }
+
+    fn as_slice(this: *Bytes) []const u8 {
+        const ptr_start = this.as_slice_ptr();
+        return ptr_start[0..this.len];
+    }
+
+    fn gc_move(this: *Bytes, gc: *GC, _: *GC.WorkList) !*ObjHeader {
+        const addr = try gc.create_impl(Bytes, false);
+        addr.* = this.*;
+        addr.obj = addr.obj.clearForwarded();
+        const bytes_addr = try gc.allocImpl(this.len, 8, false);
+        const to_space_slice = bytes_addr[0..this.len];
+        const from_space_slice = this.as_slice();
+        @memcpy(to_space_slice, from_space_slice);
+        return @ptrCast(addr);
+    }
+
+    fn gc_scan(this: *Bytes, gc: *GC, _: *GC.WorkList) !void {
+        _ = this; // autofix
+        _ = gc; // autofix
+        @panic("This should never be called");
+    }
+};
+
 /// INVARIANTS:
 /// - Strings are always interned, so two strings are equal if their pointer's are equal
 const String = struct {
-    ptr: [*]const u8,
+    ptr: BytesPtr,
     len: u32 align(8),
+
+    pub fn format(this: *const String, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        try writer.print("String(\"{s}\", .ptr={})", .{ this.as_str(), this.ptr });
+    }
+
+    pub fn from_literal(s: []const u8) String {
+        return .{
+            .ptr = BytesPtr.newLiteral(s.ptr),
+            .len = @intCast(s.len),
+        };
+    }
 
     pub fn from_constant(constant: ConstantString) String {
         return .{
@@ -1712,18 +2201,33 @@ const String = struct {
     }
 
     pub fn as_str(self: String) []const u8 {
-        return self.ptr[0..self.len];
+        // return self.ptr.getSlice()[0..self.len];
+        return self.ptr.ptrToSlice()[0..self.len];
     }
 
     pub fn cmp(a: *const String, b: *const String) Order {
-        if (@as(usize, @intFromPtr(a.ptr)) < @as(usize, @intFromPtr(b.ptr))) return .Less;
-        if (@as(usize, @intFromPtr(a.ptr)) > @as(usize, @intFromPtr(b.ptr))) return .Greater;
+        if (@as(usize, @intFromPtr(a.ptr.anyPtr())) < @as(usize, @intFromPtr(b.ptr.anyPtr()))) return .Less;
+        if (@as(usize, @intFromPtr(a.ptr.anyPtr())) > @as(usize, @intFromPtr(b.ptr.anyPtr()))) return .Greater;
+        if (a.len < b.len) return .Less;
+        if (a.len > b.len) return .Greater;
         return .Equal;
+    }
+
+    pub fn widen(this: *String) *ObjHeader {
+        return @ptrCast(this);
     }
 };
 
+/// TODO: Make this a slice over data like String
 const Array = struct {
-    ptr: ?[*]const Value align(8),
+    obj: ObjHeader = .{
+        .tag = .{
+            .lowtag = .none,
+            .ptrbits = 0,
+            .tytag = .arr,
+        },
+    },
+    ptr: ?[*]Value,
     len: u32,
     flags: Flags,
 
@@ -1732,19 +2236,33 @@ const Array = struct {
         pad: u31 = 0,
     };
 
-    pub fn new(alloc: Allocator, is_tuple: bool, values: []const Value, spread: []const Value) !Array {
-        var ptr = try alloc.alloc(Value, values.len + spread.len);
+    // pub fn format(this: *const Array, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+    //     try writer.print("Array({})", .{this});
+    // }
+
+    pub fn new(gc: *GC, is_tuple: bool, values: []const Value, spread: []const Value) !*Array {
+        const alloc = gc.as_allocator();
+        var arr = try alloc.create(Array);
+        arr.* = .{
+            .ptr = null,
+            .len = 0,
+            .flags = .{},
+        };
+        gc.push_vroot(@ptrCast(&arr));
+        defer gc.pop_vroot();
+        var ptr = try gc.as_allocator().alloc(Value, values.len + spread.len);
 
         if (values.len > 0) @memcpy(ptr[0..values.len], values);
         if (spread.len > 0) @memcpy(ptr[values.len .. values.len + spread.len], spread);
 
-        return .{
+        arr.* = .{
             .ptr = @ptrCast(ptr),
             .len = @intCast(values.len + spread.len),
             .flags = Flags{
                 .is_tuple = is_tuple,
             },
         };
+        return arr;
     }
 
     pub fn is_tuple_array(self: *const Array) bool {
@@ -1763,22 +2281,69 @@ const Array = struct {
         return &[_]Value{};
     }
 
-    pub fn empty_tuple() Array {
-        return .{
+    pub fn items_mutable(self: *Array) []Value {
+        if (self.ptr) |ptr| {
+            return ptr[0..self.len];
+        }
+        return &[_]Value{};
+    }
+
+    pub fn empty_tuple(gc: *GC) !*Array {
+        const tuple = try gc.as_allocator().create(Array);
+        tuple.* = .{
             .ptr = null,
             .len = 0,
             .flags = Flags{
                 .is_tuple = true,
             },
         };
+        return tuple;
+    }
+
+    fn gc_move(this: *Array, gc: *GC, worklist: *GC.WorkList) !*ObjHeader {
+        if (this.len == 1) {
+            std.debug.print("HI!\n", .{});
+        }
+        tyvm.debug_assert(this.obj.tag.tytag == .arr);
+        const addr = try gc.create_impl(Array, false);
+        addr.* = this.*;
+        addr.obj = addr.obj.clearForwarded();
+        if (this.ptr) |ptr| {
+            const values = ptr[0..this.len];
+            const new_values = try gc.as_allocator_no_gc().alloc(Value, values.len);
+            @memcpy(new_values, values);
+            addr.ptr = new_values.ptr;
+        }
+        tyvm.debug_assert(addr.obj.tag.tytag == .arr);
+        try worklist.append(@ptrCast(addr));
+        return @ptrCast(addr);
+    }
+
+    fn gc_scan(this: *Array, gc: *GC, worklist: *GC.WorkList) !void {
+        for (this.items_mutable()) |*item| {
+            if (item.as_anyobjheaderptr()) |ptrptr| {
+                try gc.process(worklist, ptrptr);
+            }
+        }
     }
 };
 
 /// INVARIANTS:
 /// - `fields` are ordered lexographically by key
 const Object = struct {
+    obj: ObjHeader = .{
+        .tag = .{
+            .lowtag = .none,
+            .ptrbits = 0,
+            .tytag = .obj,
+        },
+    },
     fields: ?[*]Field,
     len: u32,
+
+    pub fn format(this: *const Object, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        try writer.print("ObjTag(tag={}, fields={any})", .{ this.obj.tag, if (this.fields) |f| f[0..this.len] else &[_]Field{} });
+    }
 
     const Field = struct {
         name: String,
@@ -1802,7 +2367,7 @@ const Object = struct {
         var i: usize = 0;
         var j: usize = 1;
         while (j < self.len) {
-            if (fields[i].name.ptr == fields[j].name.ptr) {
+            if (fields[i].name.ptr.ptrbits == fields[j].name.ptr.ptrbits) {
                 print("{d}: {s} == {d}: {s}\n", .{ i, fields[i].name.as_str(), j, fields[j].name.as_str() });
                 @panic("Duplicate keys!");
             }
@@ -1811,10 +2376,46 @@ const Object = struct {
         }
     }
 
-    pub fn new(alloc: Allocator, fields: []const Value) !Object {
+    fn gc_move(this: *Object, gc: *GC, worklist: *GC.WorkList) !*ObjHeader {
+        tyvm.debug_assert(this.obj.tag.tytag == .obj);
+        const addr = try gc.create_impl(Object, false);
+        addr.* = this.*;
+        addr.obj = addr.obj.clearForwarded();
+        if (this.fields) |fields| {
+            const values = fields[0..this.len];
+            const new_values = try gc.as_allocator_no_gc().alloc(Field, values.len);
+            @memcpy(new_values, values);
+            addr.fields = new_values.ptr;
+        }
+        tyvm.debug_assert(addr.obj.tag.tytag == .obj);
+        try worklist.append(@ptrCast(addr));
+        return @ptrCast(addr);
+    }
+
+    fn gc_scan(this: *Object, gc: *GC, worklist: *GC.WorkList) !void {
+        for (this.fields_slice_mutable()) |*fld| {
+            if (fld.name.ptr.meta == .heap) {
+                try gc.process(worklist, @ptrCast(&fld.name.ptr));
+            }
+
+            if (fld.value.as_anyobjheaderptr()) |ptrptr| {
+                try gc.process(worklist, ptrptr);
+            }
+        }
+    }
+
+    pub fn new(gc: *GC, fields: []const Value) !*Object {
         tyvm.debug_assert(fields.len % 2 == 0);
 
-        const object_fields = try alloc.alloc(Field, fields.len / 2);
+        var object = try gc.as_allocator().create(Object);
+        object.* = .{
+            .fields = null,
+            .len = 0,
+        };
+        gc.push_vroot(@ptrCast(&object));
+        defer gc.pop_vroot();
+
+        const object_fields = try gc.as_allocator().alloc(Field, fields.len / 2);
 
         var i: usize = 0;
         for (object_fields) |*f| {
@@ -1825,7 +2426,7 @@ const Object = struct {
 
         std.sort.block(Object.Field, object_fields, {}, Field.less_than_key);
 
-        var object: Object = .{ .fields = object_fields.ptr, .len = @intCast(fields.len / 2) };
+        object.* = .{ .fields = object_fields.ptr, .len = @intCast(fields.len / 2) };
 
         object.panic_on_duplicate_keys();
 
@@ -1833,6 +2434,10 @@ const Object = struct {
     }
 
     pub inline fn fields_slice(self: *const Object) []const Field {
+        return if (self.fields) |fs| fs[0..self.len] else &[_]Field{};
+    }
+
+    pub inline fn fields_slice_mutable(self: *const Object) []Field {
         return if (self.fields) |fs| fs[0..self.len] else &[_]Field{};
     }
 
@@ -1848,7 +2453,7 @@ const Object = struct {
         return null;
     }
 
-    pub fn update_field(self: *Object, name: String, new_value: Value) void {
+    pub fn update_field(self: *Object, name: *String, new_value: Value) void {
         const dummy_field = .{
             .name = name,
             .value = Value.number(0),
@@ -1866,12 +2471,340 @@ const Object = struct {
 /// - `variants` is always **flat**, meaning no Value in `variants` will be a Union.
 ///    This ensures that normalizing unions is cheap.
 const Union = struct {
+    obj: ObjHeader = .{
+        .tag = .{
+            .lowtag = .none,
+            .ptrbits = 0,
+            .tytag = .@"union",
+        },
+    },
     variants: [*]Value,
     len: u32,
     discriminant_key: ?String,
 
     pub fn variants_slice(self: *const Union) []const Value {
         return self.variants[0..self.len];
+    }
+
+    pub fn variants_slice_mutable(self: *const Union) []Value {
+        return self.variants[0..self.len];
+    }
+
+    fn gc_move(this: *Union, gc: *GC, worklist: *GC.WorkList) !*ObjHeader {
+        const addr = try gc.create_impl(Union, false);
+        addr.* = this.*;
+        addr.obj = addr.obj.clearForwarded();
+        const values = this.variants[0..this.len];
+        const new_values = try gc.as_allocator_no_gc().alloc(Value, values.len);
+        @memcpy(new_values, values);
+        addr.variants = new_values.ptr;
+        try worklist.append(@ptrCast(addr));
+        return @ptrCast(addr);
+    }
+
+    fn gc_scan(this: *Union, gc: *GC, worklist: *GC.WorkList) !void {
+        for (this.variants_slice_mutable()) |*item| {
+            if (item.as_anyobjheaderptr()) |ptrptr| {
+                try gc.process(worklist, ptrptr);
+            }
+        }
+    }
+};
+
+// Simple bump allocated semi-space collector
+pub const GC = struct {
+    from_space: [*]u8,
+
+    to_space: [*]u8,
+    bump: usize = 0,
+
+    bytes_allocated: usize = 0,
+    moved_strings: u32 = 0,
+
+    vm: *VM,
+
+    __virtual_roots: [VROOT_MAX]**ObjHeader = [_]**ObjHeader{undefined} ** VROOT_MAX,
+    __virtual_roots_len: u8 = 0,
+
+    const gctrace = tyvm.logger(.GC, false);
+
+    /// This can either be:
+    /// - *ObjHeader
+    /// - BytesPtr
+    ///
+    /// All of the above have the following layout
+    const AnyObjHeaderPtr = packed struct(u64) {
+        /// We align every allocation to 8 bytes, so we know for certain the
+        /// lower 3 bits will be zeroed
+        _: u3 = 0,
+        // The actual pointer value
+        ptr: u45 = 0,
+        /// Pointers only use 48 bits of address space
+        __: u16 = 0,
+    };
+
+    const WorkList = std.ArrayList(*ObjHeader);
+
+    const VROOT_MAX = 8;
+
+    var alloc_vtable: Allocator.VTable = .{
+        .alloc = alloc,
+        .resize = resize,
+        .free = free,
+    };
+
+    var alloc_no_gc_table: Allocator.VTable = .{
+        .alloc = allocNoGC,
+        .resize = resize,
+        .free = free,
+    };
+
+    // const SPACE_SIZE = 150 * 1024 * 1024;
+    // This seems to be a good number to test collection on fib.ts
+    // const SPACE_SIZE = 1448;
+    // This seems to be a good number to test collection on everything else
+    // const SPACE_SIZE = 2048 + 1024;
+    // union.ts
+    const SPACE_SIZE = 4096;
+    comptime {
+        std.debug.assert(SPACE_SIZE % 8 == 0);
+    }
+    // const SPACE_SIZE = 2049;
+
+    pub fn init(vm: *VM) !GC {
+        const both = try std.os.mmap(null, SPACE_SIZE * 2, std.os.PROT.READ | std.os.PROT.WRITE, std.os.MAP.PRIVATE | std.os.MAP.ANONYMOUS, -1, 0);
+        return .{
+            .from_space = both.ptr,
+            .to_space = @ptrCast(&both.ptr[SPACE_SIZE]),
+            .vm = vm,
+        };
+    }
+
+    inline fn push_vroot(this: *GC, obj: **ObjHeader) void {
+        if (this.__virtual_roots_len == VROOT_MAX) @panic("vroot stack overflow");
+        tyvm.debug_assert(@intFromPtr(obj) % 8 == 0);
+        this.__virtual_roots[this.__virtual_roots_len] = obj;
+        this.__virtual_roots_len += 1;
+    }
+
+    inline fn pop_vroot(this: *GC) void {
+        tyvm.debug_assert(this.__virtual_roots_len > 0);
+        this.__virtual_roots_len -= 1;
+    }
+
+    fn as_allocator(this: *GC) Allocator {
+        return .{
+            .ptr = @ptrCast(this),
+            .vtable = &alloc_vtable,
+        };
+    }
+
+    fn as_allocator_no_gc(this: *GC) Allocator {
+        return .{
+            .ptr = @ptrCast(this),
+            .vtable = &alloc_no_gc_table,
+        };
+    }
+
+    fn flip(this: *GC) void {
+        const to_space = this.to_space;
+        this.to_space = this.from_space;
+        this.from_space = to_space;
+        this.bump = 0;
+    }
+
+    pub fn collect(this: *GC) !void {
+        gctrace("Collecting", .{});
+        this.moved_strings = 0;
+        this.flip();
+
+        const stack = this.vm.stack[0 .. (@intFromPtr(this.vm.stack_top) - @intFromPtr(&this.vm.stack)) / @sizeOf(Value)];
+        const globals: *HashMap(ConstantTableIdx, Value) = &this.vm.globals;
+
+        const STACK_VALUE_MAX = 1000;
+        const STACK_SIZE = @sizeOf(Value) * STACK_VALUE_MAX;
+        var stackfb = std.heap.stackFallback(STACK_SIZE, std.heap.c_allocator);
+        var worklist = std.ArrayList(*ObjHeader).initCapacity(stackfb.get(), STACK_VALUE_MAX) catch |e| tyvm.oom(e);
+        defer worklist.deinit();
+
+        try this.process_std_containers(&worklist);
+
+        // Start by processing roots
+        for (this.__virtual_roots[0..this.__virtual_roots_len]) |ptrptr| {
+            gctrace("Process roots: {d}", .{@intFromPtr(ptrptr)});
+            try this.process(&worklist, @ptrCast(ptrptr));
+        }
+        gctrace("STACK LEN: {d}", .{stack.len});
+        for (stack) |*val| {
+            gctrace("Process stack: {d}", .{@intFromPtr(val)});
+            if (val.as_anyobjheaderptr()) |ptrptr| {
+                try this.process(&worklist, ptrptr);
+            }
+        }
+        var iter = globals.valueIterator();
+        while (iter.next()) |val| {
+            gctrace("Process global: {d}", .{@intFromPtr(val)});
+            if (val.as_anyobjheaderptr()) |ptrptr| {
+                try this.process(&worklist, ptrptr);
+            }
+        }
+
+        while (worklist.popOrNull()) |val| {
+            gctrace("Process worklist item: {d}", .{@intFromPtr(val)});
+            try this.scan(&worklist, val);
+        }
+
+        _ = memset(@ptrCast(this.from_space), 0, SPACE_SIZE);
+    }
+
+    /// The VM uses certain std container types like std.AutoHashMap and std.StringArrayHashMap
+    fn process_std_containers(this: *GC, worklist: *WorkList) !void {
+
+        // TODO: std.ArrayHashMap.clone() does a for-loop over entries instead of memcpy
+        // could pose a performance problem
+        // we could probably do the memcpy ourself
+        //
+        // TODO: should we even copy `constant_strings` and `native_functions`?
+        // these live for the entire lifetime of the program, so seems wasteful
+        this.vm.constant_strings = try this.vm.constant_strings.cloneWithAllocator(this.as_allocator_no_gc());
+        this.vm.native_functions = try this.vm.native_functions.cloneWithAllocator(this.as_allocator_no_gc());
+        this.vm.functions = try this.vm.functions.cloneWithAllocator(this.as_allocator_no_gc());
+        this.vm.globals = try this.vm.globals.cloneWithAllocator(this.as_allocator_no_gc());
+
+        this.vm.interned_strings = try this.vm.interned_strings.cloneWithAllocator(this.as_allocator_no_gc());
+
+        var iter = this.vm.interned_strings.iterator();
+        while (iter.next()) |entry| {
+            if (entry.key_ptr.ptr.meta == .heap) {
+                try this.process(worklist, @ptrCast(&entry.key_ptr.ptr));
+            }
+            if (entry.value_ptr.ptr.meta == .heap) {
+                try this.process(worklist, @ptrCast(&entry.value_ptr.ptr));
+            }
+        }
+    }
+
+    fn process(this: *GC, worklist: *WorkList, ptrptr: *AnyObjHeaderPtr) !void {
+        if ((ptrptr.ptr << 3) == 0) {
+            std.debug.print("fuck", .{});
+        }
+        tyvm.debug_assert((ptrptr.ptr << 3) != 0);
+        const from_space_ptr: *ObjHeader = @ptrFromInt(@as(usize, ptrptr.ptr << 3));
+        // Already forwarded
+        if (from_space_ptr.tag.lowtag == .forwarded) {
+            tyvm.debug_assert((@intFromPtr(from_space_ptr.tag.forwarded_ptr()) & 0b111) == 0);
+            ptrptr.ptr = @intCast(@intFromPtr(from_space_ptr.tag.forwarded_ptr()) >> 3);
+        }
+        // Need to forward it
+        else {
+            const to_space_ptr = try this.copy(worklist, from_space_ptr);
+            from_space_ptr.tag.lowtag = .forwarded;
+            tyvm.debug_assert((@intFromPtr(to_space_ptr) & 0b111) == 0);
+            from_space_ptr.tag.ptrbits = @intCast(@intFromPtr(to_space_ptr) >> 3);
+            ptrptr.ptr = @intCast(@intFromPtr(to_space_ptr) >> 3);
+        }
+    }
+
+    /// Copies an object in from_space into to_space, and returns a pointer to the object in to_space
+    fn copy(this: *GC, worklist: *WorkList, from_space_ptr: *ObjHeader) !*ObjHeader {
+        return from_space_ptr.gc_move(this, worklist);
+    }
+
+    fn scan(this: *GC, worklist: *WorkList, val: *ObjHeader) !void {
+        gctrace("Scan: {d}", .{@intFromPtr(val)});
+        try val.gc_scan(this, worklist);
+        // switch (val.tag.tytag) {
+        //     .bytes => unreachable,
+        //     .arr => {
+        //         const narrow_addr: *Array = val.narrow(.arr);
+        //         for (narrow_addr.items_mutable()) |*item| {
+        //             if (item.as_anyobjheaderptr()) |ptrptr| {
+        //                 try this.process(worklist, ptrptr);
+        //             }
+        //         }
+        //     },
+        //     .obj => {
+        //         const narrow_addr: *Object = val.narrow(.obj);
+        //         for (narrow_addr.fields_slice_mutable()) |*fld| {
+        //             if (fld.name.ptr.meta == .heap) {
+        //                 try this.process(worklist, @ptrCast(&fld.name.ptr));
+        //             }
+
+        //             if (fld.value.as_anyobjheaderptr()) |ptrptr| {
+        //                 try this.process(worklist, ptrptr);
+        //             }
+        //         }
+        //     },
+        //     .@"union" => {
+        //         const narrow_addr: *Union = val.narrow(.@"union");
+        //         for (narrow_addr.variants_slice_mutable()) |*item| {
+        //             if (item.as_anyobjheaderptr()) |ptrptr| {
+        //                 try this.process(worklist, ptrptr);
+        //             }
+        //         }
+        //     },
+        // }
+    }
+
+    fn alloc(ctx: *anyopaque, n: usize, log2_ptr_align: u8, _: usize) ?[*]u8 {
+        const this: *GC = @ptrCast(@alignCast(ctx));
+        return this.__allocImpl(n, log2_ptr_align, 0, true);
+    }
+
+    fn allocNoGC(ctx: *anyopaque, n: usize, log2_ptr_align: u8, _: usize) ?[*]u8 {
+        const this: *GC = @ptrCast(@alignCast(ctx));
+        return this.__allocImpl(n, log2_ptr_align, 0, false);
+    }
+
+    fn __allocImpl(this: *GC, n: usize, log2_ptr_align: u29, _: usize, comptime allow_collect: bool) ?[*]u8 {
+        const ptr_align = @as(usize, 1) << @as(Allocator.Log2Align, @intCast(log2_ptr_align));
+        const addr = this.bump;
+        const adjusted_addr = mem.alignForward(usize, addr, ptr_align);
+        const adjusted_index = this.bump + (adjusted_addr - addr);
+        const new_end_index = adjusted_index + n;
+
+        gctrace("Alloc: len={d} newbump={}\n", .{ new_end_index - this.bump, new_end_index });
+
+        if (new_end_index > SPACE_SIZE) {
+            if (comptime allow_collect) {
+                this.collect() catch return null;
+                return __allocImpl(this, n, log2_ptr_align, 0, false);
+            }
+            return null;
+        }
+
+        this.bump = new_end_index;
+
+        return this.to_space + adjusted_index;
+    }
+
+    fn allocImpl(this: *GC, size: usize, @"align": usize, comptime allow_collect: bool) ![*]u8 {
+        const log2_ptr_align = std.math.log2(@"align");
+        const ret = this.__allocImpl(size, @intCast(log2_ptr_align), 0, allow_collect) orelse std.mem.Allocator.Error.OutOfMemory;
+        return ret;
+    }
+
+    fn create_impl(this: *GC, comptime T: type, comptime allow_collect: bool) !*T {
+        const addr: *T = @ptrCast(@alignCast(try this.allocImpl(@sizeOf(T), @alignOf(T), allow_collect)));
+        return addr;
+    }
+
+    fn resize(ctx: *anyopaque, buf: []u8, buf_align: u8, new_len: usize, ret_addr: usize) bool {
+        _ = ctx; // autofix
+        _ = buf; // autofix
+        _ = buf_align; // autofix
+        _ = new_len; // autofix
+        _ = ret_addr; // autofix
+
+        return false;
+    }
+
+    fn free(ctx: *anyopaque, buf: []u8, log2_buf_align: u8, ret_addr: usize) void {
+        _ = ctx; // autofix
+        _ = buf; // autofix
+        _ = log2_buf_align; // autofix
+        _ = ret_addr; // autofix
+
     }
 };
 

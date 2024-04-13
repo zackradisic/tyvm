@@ -2,6 +2,7 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::mem::size_of;
 use std::num::NonZeroUsize;
+use std::ops::Range;
 use std::thread::panicking;
 
 use crate::common::AllocBox as Box;
@@ -15,7 +16,7 @@ use crate::{common::*, ir};
 pub const GLOBAL_STR: &'static str = "__tyvm_global";
 pub const MAIN_STR: &'static str = "Main";
 pub const GLOBAL_STR_TABLE_IDX: ConstantTableIdx = ConstantTableIdx(0);
-pub const MAIN_STR_TABLE_IDX: ConstantTableIdx = ConstantTableIdx(1);
+pub const MAIN_STR_TABLE_IDX: ConstantTableIdx = ConstantTableIdx(2);
 const UNINIT_STR: &'static str = "uninitialized memory string if you see this its bad";
 
 pub trait Compile<'alloc> {
@@ -82,6 +83,12 @@ pub enum ConstantKind {
     Boolean,
     Number,
     String,
+    Bytes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BytesEncoding {
+    Utf8,
 }
 
 unsafe impl bytemuck::Pod for ConstantKind {}
@@ -159,6 +166,24 @@ impl<'alloc> Compiler<'alloc> {
         todo!()
     }
 
+    fn alloc_constant_bytes(&mut self, bytes: &[u8]) -> ConstantTableIdx {
+        let size = bytes.len();
+
+        let len_size = size_of::<u32>();
+        let pad = size_of::<usize>() - len_size;
+
+        let (idx, buf, range) = self.alloc_constant_with_len(
+            ConstantKind::Bytes,
+            (len_size + pad + size).try_into().unwrap(),
+        );
+
+        println!("Alloc bytes: {} range={:?}", idx.0, range);
+        buf[0..len_size].copy_from_slice(&(size as u32).to_le_bytes());
+        buf[(len_size + pad)..].copy_from_slice(bytes);
+
+        return idx;
+    }
+
     /// Allocates the given string in the constant pool. If the string already exists,
     /// it instead returns an index to the existing allocation.
     fn alloc_constant_string(&mut self, string: &'alloc str) -> ConstantTableIdx {
@@ -167,22 +192,27 @@ impl<'alloc> Compiler<'alloc> {
         }
 
         let u32_size = size_of::<u32>();
-        // `u32_size * 2` because we need the bytes to be aligned to 8
-        // let size = (u32_size * 2) + string.as_bytes().len();
-        let size = u32_size + string.as_bytes().len();
 
-        let (idx, buf) =
-            self.alloc_constant_with_len(ConstantKind::String, size.try_into().unwrap());
+        let (idx, _, range) = self.alloc_constant_with_len(
+            ConstantKind::String,
+            (size_of::<u32>() + size_of::<u32>()).try_into().unwrap(),
+        );
 
-        if idx.0 == 7 {
-            println!("STRING: {}", string);
-        }
+        let bytes_idx = self.alloc_constant_bytes(string.as_bytes());
 
-        let len = string.len() as u32;
-        buf[0..u32_size].copy_from_slice(&len.to_le_bytes());
-        buf[u32_size..].copy_from_slice(string.as_bytes());
+        let buf = &mut self.constants[range.clone()];
+
+        let len: u32 = string.as_bytes().len().try_into().unwrap();
+
+        buf[0..u32_size].copy_from_slice(&bytes_idx.0.to_le_bytes());
+        buf[u32_size..].copy_from_slice(&len.to_le_bytes());
 
         self.interned_strings.insert(string, idx);
+
+        println!(
+            "Alloc string: {}, idx={}, len={}, range={:?}, byte_idx={}",
+            string, idx.0, len, range, bytes_idx.0
+        );
 
         idx
     }
@@ -190,7 +220,7 @@ impl<'alloc> Compiler<'alloc> {
     fn alloc_constant_num(&mut self, num: f64) -> ConstantTableIdx {
         let size = size_of::<f64>();
 
-        let (idx, buf) =
+        let (idx, buf, _) =
             self.alloc_constant_with_len(ConstantKind::Number, size.try_into().unwrap());
 
         buf[0..size].copy_from_slice(&num.to_le_bytes());
@@ -200,7 +230,7 @@ impl<'alloc> Compiler<'alloc> {
 
     fn alloc_constant_bool(&mut self, b: bool) -> ConstantTableIdx {
         let size = 1;
-        let (idx, buf) = self.alloc_constant_with_len(ConstantKind::Boolean, 1);
+        let (idx, buf, _) = self.alloc_constant_with_len(ConstantKind::Boolean, 1);
         buf[0] = b as u8;
         idx
     }
@@ -212,7 +242,7 @@ impl<'alloc> Compiler<'alloc> {
         &mut self,
         kind: ConstantKind,
         data_len: u32,
-    ) -> (ConstantTableIdx, &mut [u8]) {
+    ) -> (ConstantTableIdx, &mut [u8], Range<usize>) {
         // Calculate the required padding to achieve 8-byte alignment
         let padding = (8 - (self.constants.len() % 8)) % 8;
 
@@ -231,7 +261,7 @@ impl<'alloc> Compiler<'alloc> {
         let end = self.constants.len();
 
         // Return the starting index of the allocated data
-        (table_idx, &mut self.constants[start..end])
+        (table_idx, &mut self.constants[start..end], start..end)
     }
 
     fn add_constant_table_entry(

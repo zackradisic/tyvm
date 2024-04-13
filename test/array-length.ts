@@ -1,10 +1,11 @@
-import { Print, Sub, Lte, Eq, Panic } from "./std";
+// This fails because [0, ...infer Rest
+import { Print, Sub, Lte, Eq, Panic, AssertEq } from "./std";
 
 // Helper type to increment array by adding an element
-type Inc<ArrayType extends any[]> = [...ArrayType, unknown];
+type Inc<ArrayType extends any[]> = [...ArrayType, 0];
 
 // Helper type to decrement array by removing an element
-type Dec<ArrayType extends any[]> = ArrayType extends [unknown, ...infer Rest]
+type Dec<ArrayType extends any[]> = ArrayType extends [0, ...infer Rest]
   ? Rest
   : [];
 
@@ -23,4 +24,7 @@ type Four = Inc<Three>;
 
 type TestAddition = Add<Two, Two>; // Should be equivalent to Four
 
-export type Main<Args extends string[]> = Print<TestAddition["length"]>;
+export type Main<Args extends string[]> = AssertEq<
+  Print<TestAddition["length"]>,
+  4
+>;

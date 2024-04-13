@@ -27,11 +27,18 @@ pub const isX86 = @import("builtin").target.cpu.arch.isX86();
 pub const isX64 = @import("builtin").target.cpu.arch == .x86_64;
 pub const allow_assert = isDebug or isTest or std.builtin.Mode.ReleaseSafe == @import("builtin").mode;
 
-pub const debug_assert = if (allow_assert) __debug_assert else ___debug_assert;
+pub const debug_assert = if (allow_assert) std.debug.assert else ___debug_assert;
 pub fn __debug_assert(aok: bool) void {
     std.debug.assert(aok);
 }
 pub fn ___debug_assert(_: bool) void {}
+
+pub inline fn oom(e: anyerror) noreturn {
+    if (comptime allow_assert) {
+        if (e != std.mem.Allocator.Error.OutOfMemory) @panic("Expected OOM");
+    }
+    @panic("Out of memory");
+}
 
 const _log_fn = fn (comptime fmt: []const u8, args: anytype) void;
 pub fn logger(comptime tag: anytype, comptime disabled: bool) _log_fn {
@@ -83,6 +90,7 @@ pub fn logger(comptime tag: anytype, comptime disabled: bool) _log_fn {
             lock.lock();
             defer lock.unlock();
             out.print("[" ++ tagname ++ "] " ++ fmt, args) catch @panic("Failed to write!");
+            out.context.flush() catch @panic("Failed to write!");
         }
     }.log;
 }
