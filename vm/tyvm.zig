@@ -11,6 +11,8 @@ pub const build_target: BuildTarget = brk: {
     }
 };
 
+pub const is64Bit = @sizeOf(usize) == 8;
+pub const is32Bit = @sizeOf(usize) == 4;
 pub const isWasm = build_target == .wasm;
 pub const isNative = build_target == .native;
 pub const isWasi = build_target == .wasi;

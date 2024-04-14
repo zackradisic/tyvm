@@ -170,7 +170,7 @@ impl<'alloc> Compiler<'alloc> {
         let size = bytes.len();
 
         let len_size = size_of::<u32>();
-        let pad = size_of::<usize>() - len_size;
+        let pad = 8 - len_size;
 
         let (idx, buf, range) = self.alloc_constant_with_len(
             ConstantKind::Bytes,

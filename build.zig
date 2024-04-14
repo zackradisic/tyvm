@@ -11,7 +11,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
 
     // Standard optimization options allow the person running `zig build` to select
-    // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
+    // between Debug, ReleaseSafe, ReleaseFast,-emscripten and ReleaseSmall. Here we do not
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
@@ -26,19 +26,14 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
                 .link_libc = true,
             });
-            lib.export_symbol_names = &.{
-                "init",
-                "get_function",
-                "get_global_function",
-                "run",
-                "alloc",
-                "dealloc", 
-                "is_game",
-                "jump",
-                "reset"
-            };
+            // lib.target = std.zig.CrossTarget{
+            //     .cpu_arch = .wasm64,
+            //     .os_tag = .emscripten,
+            // };
+            lib.export_symbol_names = &.{ "init", "get_function", "get_global_function", "run", "alloc", "dealloc", "is_game", "jump", "reset" };
             lib.initial_memory = 65536 * 65536;
             lib.max_memory = 65536 * 65536;
+            lib.dwarf_format = .@"32";
             break :exe lib;
         }
         const exe = b.addExecutable(.{
@@ -55,15 +50,15 @@ pub fn build(b: *std.Build) void {
     out.addIncludePath(.{ .path = "./include" });
     if (is_wasm) {
         if (optimize == .Debug) {
-            out.addLibraryPath(.{ .path = "./target/wasm32-wasi/debug"});
+            out.addLibraryPath(.{ .path = "./target/wasm32-wasi/debug" });
         } else {
-            out.addLibraryPath(.{ .path = "./target/wasm32-wasi/release"});
+            out.addLibraryPath(.{ .path = "./target/wasm32-wasi/release" });
         }
     } else {
         if (optimize == .Debug) {
-            out.addLibraryPath(.{ .path = "./target/debug"});
+            out.addLibraryPath(.{ .path = "./target/debug" });
         } else {
-            out.addLibraryPath(.{ .path = "./target/release"});
+            out.addLibraryPath(.{ .path = "./target/release" });
         }
     }
 
@@ -72,6 +67,7 @@ pub fn build(b: *std.Build) void {
         out.dll_export_fns = true;
         out.strip = false;
         out.export_table = true;
+        // out.symb
         out.linkLibC();
     }
 

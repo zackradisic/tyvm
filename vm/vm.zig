@@ -11,6 +11,9 @@ const HashMap = std.AutoHashMap;
 pub fn StringMap(comptime V: type) type {
     return std.ArrayHashMap(String, V, struct {
         pub fn hash(self: @This(), s: String) u32 {
+            std.debug.print("doing it:\n", .{});
+            std.debug.print("HASING: {s}\n", .{s.as_str()});
+            defer std.debug.print("DONE HASHING: {s}\n", .{s.as_str()});
             _ = self; // autofix
             return std.array_hash_map.hashString(s.as_str());
         }
@@ -61,19 +64,6 @@ length_string: ?ConstantTableIdx = null,
 length_string_ptr: ?[*]const u8 = null,
 
 pub fn new(gc: *GC, bytecode: []const u8) !VM {
-    var items = std.ArrayList(usize).init(gc.as_allocator_no_gc());
-    try items.append(420);
-    try items.append(69);
-    try items.append(42);
-    try items.append(42);
-    try items.append(42);
-    try items.append(42);
-    try items.append(42);
-    try items.append(42);
-    try items.append(42);
-    for (items.items) |i| {
-        std.debug.print("HI: {d}\n", .{i});
-    }
     var vm: VM = .{
         .globals = HashMap(ConstantTableIdx, Value).init(gc.as_allocator_no_gc()),
         .constant_strings = StringMap(ConstantTableIdx).init(gc.as_allocator_no_gc()),
@@ -128,24 +118,32 @@ fn load_bytecode(self: *VM, bytecode: []const u8) !void {
     while (iter.next()) |val| {
         std.debug.print("IDX: {d}\n", .{val.key_ptr.*.v});
     }
+    std.debug.print("Printed functions\n", .{});
 
     self.is_game = header.is_game == 1;
     self.constant_pool = constant_pool;
     self.constant_table = constant_table;
 
     for (self.constant_table, 0..) |entry, i| {
+        std.debug.print("PROCESS ENTRY: {d} {any}\n", .{ i, entry });
         if (entry.kind == .String) {
+            std.debug.print("Reading constant\n", .{});
             const str = self.read_constant_string(entry.idx);
+            std.debug.print("Read the constant: {any} {s}\n", .{ str, str.as_str() });
+            std.debug.print("Read the constant2: {any} {s}\n", .{ str, str.as_str() });
             if (self.is_game and std.mem.eql(u8, str.as_str(), "InitialState")) {
                 self.initial_state_index = ConstantTableIdx.new(@intCast(i));
             } else if (std.mem.eql(u8, str.as_str(), "length")) {
                 self.length_string = ConstantTableIdx.new(@intCast(i));
                 self.length_string_ptr = str.as_str().ptr;
             }
+            std.debug.print("Putting in interned stirngs: {}\n", .{str});
             try self.interned_strings.put(str, str);
+            std.debug.print("Putting in constant stirngs: {}\n", .{str});
             try self.constant_strings.put(str, ConstantTableIdx.new(@intCast(i)));
         }
     }
+    std.debug.print("Load bytecode done\n", .{});
 }
 
 pub fn const_str(comptime str: anytype) []const u8 {
@@ -204,7 +202,7 @@ fn load_native_functions(self: *VM) !void {
     }
 }
 
-pub fn get_function(self: *VM, name: []const u8) ?*const Function {
+pub fn get_function(self: *VM, name: String) ?*const Function {
     const table_idx = self.constant_strings.get(name) orelse return null;
     const function = self.functions.getPtr(table_idx) orelse return null;
     return function;
@@ -526,7 +524,7 @@ pub fn run(self: *VM, function: *const Function) !void {
     }
 }
 
-fn intern_string(self: *VM, str_: String) !String {
+pub fn intern_string(self: *VM, str_: String) !String {
     var str = str_;
     self.gc.push_vroot(@ptrCast(&str));
     defer self.gc.pop_vroot();
@@ -888,8 +886,8 @@ fn make_array_spread(self: *VM, count: u32, spread_bitfield: u256) !void {
     trace("PTR: {d}", .{@intFromPtr(ptrptr)});
     if (comptime tyvm.allow_assert) {
         const cast: *GC.AnyObjHeaderPtr = @ptrCast(ptrptr);
-        tyvm.debug_assert((cast.ptr << 3) == @intFromPtr(array));
-        const from_space_ptr: *ObjHeader = @ptrFromInt(@as(usize, cast.ptr << 3));
+        tyvm.debug_assert(cast.getPtr() == @intFromPtr(array));
+        const from_space_ptr: *ObjHeader = @ptrFromInt(cast.getPtr());
         tyvm.debug_assert(from_space_ptr.tag.tytag == .arr);
     }
 
@@ -1089,9 +1087,8 @@ fn read_constant_bytes(self: *const VM, constant_idx: ConstantIdx) BytesPtr {
     const constant_bytes_ptr: [*]const u8 = @ptrCast(&self.constant_pool[entry.idx.v]);
     const actual_ptr: [*]const u8 = constant_bytes_ptr;
     tyvm.debug_assert((@intFromPtr(actual_ptr) & 0b111) == 0);
-    return .{
-        .meta = .constant,
-        .ptrbits = @intCast(@intFromPtr(actual_ptr) >> 3),
+    return BytesPtr{
+        .impl = BytesPtr.Impl.init(.constant, actual_ptr),
     };
 }
 
@@ -1715,13 +1712,13 @@ pub const ObjTag = packed struct(u64) {
     ptrbits: u45 = 0,
     tytag: ObjTy,
 
-    pub fn format(this: *const ObjTag, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-        try writer.print("ObjTag(lowtag={s}, is_constant={}, ptr={d}, tytag={s})", .{ @tagName(this.lowtag), this.is_constant, this.ptrbits << 3, @tagName(this.tytag) });
+    pub fn format(this: ObjTag, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        try writer.print("ObjTag(lowtag={s}, is_constant={}, ptr={d}, tytag={s})", .{ @tagName(this.lowtag), this.is_constant, @as(u64, @intCast(this.ptrbits)) << 3, @tagName(this.tytag) });
     }
 
     pub fn forwarded_ptr(this: ObjTag) *ObjHeader {
         tyvm.debug_assert(this.lowtag == .forwarded);
-        return @ptrFromInt(@as(usize, this.ptrbits) << 3);
+        return @ptrFromInt(@as(usize, @intCast(this.ptrbits)) << 3);
     }
 
     /// size excluding the obj tag
@@ -1764,7 +1761,7 @@ pub const Value = union(ValueKind) {
     fn as_anyobjheaderptr_impl(self: *Value) ?*GC.AnyObjHeaderPtr {
         return switch (self.*) {
             .String => {
-                if (self.String.ptr.meta == .heap) return @ptrCast(&self.String.ptr);
+                if (self.String.ptr.impl.meta == .heap) return @ptrCast(&self.String.ptr);
                 return null;
             },
             .Array => |*v| {
@@ -1834,6 +1831,7 @@ pub const Value = union(ValueKind) {
     }
 
     fn debug(self: Value, alloc: Allocator, comptime str: []const u8) !void {
+        // alloc.alloc;
         var buf = std.ArrayListUnmanaged(u8){};
         defer buf.deinit(alloc);
         try self.encode_as_string(alloc, &buf, true);
@@ -2030,20 +2028,47 @@ fn write_str_expand(alloc: Allocator, buf: *std.ArrayListUnmanaged(u8), comptime
 }
 
 const BytesPtr = packed struct(usize) {
-    meta: enum(u3) {
-        constant = 0b100,
-        literal = 0b110,
-        heap = 0b010,
-    },
-    ptrbits: u45 = 0,
-    ___unused: u16 = 0,
+    const Meta = enum(u3) { constant = 0b100, literal = 0b110, heap = 0b010 };
+    const Impl64 = packed struct(u64) {
+        meta: Meta,
+        ptrbits: u45 = 0,
+        ___unused: u16 = 0,
+
+        pub fn getPtrUsize(this: Impl64) usize {
+            return @as(usize, this.ptrbits) << 3;
+        }
+
+        pub fn init(meta: Meta, ptr: [*]const u8) Impl64 {
+            return Impl64{
+                .meta = meta,
+                .ptrbits = @intCast(@intFromPtr(ptr) >> 3),
+            };
+        }
+    };
+    const Impl32 = packed struct(u32) {
+        meta: Meta,
+        ptrbits: u29 = 0,
+
+        pub fn getPtrUsize(this: Impl32) usize {
+            return @as(usize, this.ptrbits) << 3;
+        }
+
+        pub fn init(meta: Meta, ptr: [*]const u8) Impl32 {
+            return Impl32{
+                .meta = meta,
+                .ptrbits = @intCast(@intFromPtr(ptr) >> 3),
+            };
+        }
+    };
+    const Impl = if (tyvm.is64Bit) Impl64 else Impl32;
+    impl: Impl,
 
     pub fn deinit(this: BytesPtr, allocator: Allocator) void {
         switch (this.meta) {
             .constant, .literal => {},
             .heap => {
-                const bytes: *Bytes = @ptrFromInt(@as(usize, this.ptrbits) << 3);
-                const dataptr: [*]const u8 = @ptrFromInt(@as(usize, this.ptrbits) << 3);
+                const bytes: *Bytes = @ptrFromInt(this.impl.getPtrUsize());
+                const dataptr: [*]const u8 = @ptrFromInt(this.impl.getPtrUsize());
                 const bytes_len = bytes.len;
                 const len = @sizeOf(Bytes) + bytes_len;
                 const data = dataptr[0..len];
@@ -2053,19 +2078,19 @@ const BytesPtr = packed struct(usize) {
     }
 
     pub fn format(this: *const BytesPtr, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-        try writer.print("BytesPtr(.meta={s}, .ptr={d})", .{ @tagName(this.meta), this.ptrbits << 3 });
+        try writer.print("BytesPtr(.meta={s}, .ptr={d})", .{ @tagName(this.impl.meta), this.impl.getPtrUsize() });
     }
 
     pub fn newLiteral(ptr: [*]const u8) BytesPtr {
         trace("PTR: {d}", .{@intFromPtr(ptr)});
         tyvm.debug_assert((@intFromPtr(ptr) & 0b111) == 0);
-        return BytesPtr{ .meta = .literal, .ptrbits = @intCast(@intFromPtr(ptr) >> 3) };
+        return BytesPtr{ .impl = Impl.init(.literal, ptr) };
     }
 
     pub fn newConstant(ptr: [*]const u8) BytesPtr {
         trace("PTR: {d}", .{@intFromPtr(ptr)});
         tyvm.debug_assert((@intFromPtr(ptr) & 0b111) == 0);
-        return BytesPtr{ .meta = .constant, .ptrbits = @intCast(@intFromPtr(ptr) >> 3) };
+        return BytesPtr{ .impl = Impl.init(.constant, ptr) };
     }
 
     pub fn setForwarded(this: *BytesPtr, forwarded: bool) void {
@@ -2078,11 +2103,11 @@ const BytesPtr = packed struct(usize) {
     }
 
     pub inline fn anyPtr(this: BytesPtr) *anyopaque {
-        return @ptrFromInt(@as(usize, @intCast(@as(u64, this.ptrbits) << 3)));
+        return @ptrFromInt(this.impl.getPtrUsize());
     }
 
     pub inline fn __ptr(this: BytesPtr, comptime T: type) *T {
-        return @ptrFromInt(@as(usize, this.ptrbits) << 3);
+        return @ptrFromInt(this.impl.getPtrUsize());
     }
 
     pub inline fn ptrToSlice(this: BytesPtr) [*]const u8 {
@@ -2096,10 +2121,11 @@ const BytesPtr = packed struct(usize) {
     }
 
     pub inline fn ptrToSliceImpl(this: BytesPtr, comptime slice: bool) if (slice) []const u8 else [*]const u8 {
-        switch (this.meta) {
+        switch (this.impl.meta) {
             .constant => {
                 const constant: *ConstantBytes = this.__ptr(ConstantBytes);
                 const bytes_ptr: [*]const u8 = @as([*]const u8, @ptrCast(constant)) + @sizeOf(ConstantBytes);
+                tyvm.debug_assert(@intFromPtr(bytes_ptr) % 8 == 0);
                 if (comptime slice) return bytes_ptr[0..constant.len];
                 return bytes_ptr;
             },
@@ -2112,6 +2138,8 @@ const BytesPtr = packed struct(usize) {
             .literal => {
                 const theptr: [*]const u8 = @ptrCast(this.__ptr(u8));
                 if (comptime slice) {
+                    // - 8 because we store length and the string bytes are align(8)
+                    // see `cons_str()` function
                     const lenptr: *const u32 = @ptrCast(@alignCast(theptr - 8));
                     return theptr[0..lenptr.*];
                 }
@@ -2127,6 +2155,7 @@ const Bytes = struct {
     },
     len: u32,
     _pad: u32 = 0,
+    // bytes are stored after the above fields
 
     const Encoding = enum(u16) {
         // latin1,
@@ -2143,8 +2172,7 @@ const Bytes = struct {
         @memcpy(heap_slice[0..slice.len], slice);
         tyvm.debug_assert((@intFromPtr(bytes) & 0b111) == 0);
         return BytesPtr{
-            .meta = .heap,
-            .ptrbits = @intCast(@intFromPtr(bytes) >> 3),
+            .impl = BytesPtr.Impl.init(.heap, @ptrCast(bytes)),
         };
     }
 
@@ -2178,7 +2206,7 @@ const Bytes = struct {
 
 /// INVARIANTS:
 /// - Strings are always interned, so two strings are equal if their pointer's are equal
-const String = struct {
+pub const String = struct {
     ptr: BytesPtr,
     len: u32 align(8),
 
@@ -2367,7 +2395,7 @@ const Object = struct {
         var i: usize = 0;
         var j: usize = 1;
         while (j < self.len) {
-            if (fields[i].name.ptr.ptrbits == fields[j].name.ptr.ptrbits) {
+            if (fields[i].name.ptr.impl.ptrbits == fields[j].name.ptr.impl.ptrbits) {
                 print("{d}: {s} == {d}: {s}\n", .{ i, fields[i].name.as_str(), j, fields[j].name.as_str() });
                 @panic("Duplicate keys!");
             }
@@ -2394,7 +2422,7 @@ const Object = struct {
 
     fn gc_scan(this: *Object, gc: *GC, worklist: *GC.WorkList) !void {
         for (this.fields_slice_mutable()) |*fld| {
-            if (fld.name.ptr.meta == .heap) {
+            if (fld.name.ptr.impl.meta == .heap) {
                 try gc.process(worklist, @ptrCast(&fld.name.ptr));
             }
 
@@ -2453,8 +2481,8 @@ const Object = struct {
         return null;
     }
 
-    pub fn update_field(self: *Object, name: *String, new_value: Value) void {
-        const dummy_field = .{
+    pub fn update_field(self: *Object, name: String, new_value: Value) void {
+        const dummy_field: Object.Field = .{
             .name = name,
             .value = Value.number(0),
         };
@@ -2533,14 +2561,30 @@ pub const GC = struct {
     /// - BytesPtr
     ///
     /// All of the above have the following layout
-    const AnyObjHeaderPtr = packed struct(u64) {
-        /// We align every allocation to 8 bytes, so we know for certain the
-        /// lower 3 bits will be zeroed
-        _: u3 = 0,
-        // The actual pointer value
-        ptr: u45 = 0,
-        /// Pointers only use 48 bits of address space
-        __: u16 = 0,
+    const AnyObjHeaderPtr = packed struct(usize) {
+        const Impl64 = packed struct(u64) {
+            /// We align every allocation to 8 bytes, so we know for certain the
+            /// lower 3 bits will be zeroed
+            _: u3 = 0,
+            // The actual pointer value
+            __ptr: u45 = 0,
+            /// Pointers only use 48 bits of address space
+            __: u16 = 0,
+        };
+        const Impl32 = packed struct(u32) {
+            _: u3 = 0,
+            __ptr: u29 = 0,
+        };
+        const Impl = if (tyvm.is64Bit) Impl64 else Impl32;
+        impl: Impl,
+
+        pub inline fn getPtr(this: AnyObjHeaderPtr) usize {
+            return @as(usize, this.impl.__ptr) << 3;
+        }
+
+        pub inline fn setPtr(this: *AnyObjHeaderPtr, ptr: *ObjHeader) void {
+            this.impl.__ptr = @intCast(@intFromPtr(ptr) >> 3);
+        }
     };
 
     const WorkList = std.ArrayList(*ObjHeader);
@@ -2559,20 +2603,23 @@ pub const GC = struct {
         .free = free,
     };
 
-    // const SPACE_SIZE = 150 * 1024 * 1024;
+    const SPACE_SIZE = 150 * 1024 * 1024;
     // This seems to be a good number to test collection on fib.ts
     // const SPACE_SIZE = 1448;
     // This seems to be a good number to test collection on everything else
     // const SPACE_SIZE = 2048 + 1024;
     // union.ts
-    const SPACE_SIZE = 4096;
+    // const SPACE_SIZE = 4096;
     comptime {
         std.debug.assert(SPACE_SIZE % 8 == 0);
     }
     // const SPACE_SIZE = 2049;
 
     pub fn init(vm: *VM) !GC {
-        const both = try std.os.mmap(null, SPACE_SIZE * 2, std.os.PROT.READ | std.os.PROT.WRITE, std.os.MAP.PRIVATE | std.os.MAP.ANONYMOUS, -1, 0);
+        const both: []u8 = brk: {
+            if (tyvm.isPosix) break :brk try std.os.mmap(null, SPACE_SIZE * 2, std.os.PROT.READ | std.os.PROT.WRITE, std.os.MAP.PRIVATE | std.os.MAP.ANONYMOUS, -1, 0);
+            break :brk try std.heap.c_allocator.alignedAlloc(u8, 8, SPACE_SIZE * 2);
+        };
         return .{
             .from_space = both.ptr,
             .to_space = @ptrCast(&both.ptr[SPACE_SIZE]),
@@ -2580,14 +2627,14 @@ pub const GC = struct {
         };
     }
 
-    inline fn push_vroot(this: *GC, obj: **ObjHeader) void {
+    pub inline fn push_vroot(this: *GC, obj: **ObjHeader) void {
         if (this.__virtual_roots_len == VROOT_MAX) @panic("vroot stack overflow");
-        tyvm.debug_assert(@intFromPtr(obj) % 8 == 0);
+        tyvm.debug_assert(@intFromPtr(obj.*) % 8 == 0);
         this.__virtual_roots[this.__virtual_roots_len] = obj;
         this.__virtual_roots_len += 1;
     }
 
-    inline fn pop_vroot(this: *GC) void {
+    pub inline fn pop_vroot(this: *GC) void {
         tyvm.debug_assert(this.__virtual_roots_len > 0);
         this.__virtual_roots_len -= 1;
     }
@@ -2675,25 +2722,22 @@ pub const GC = struct {
 
         var iter = this.vm.interned_strings.iterator();
         while (iter.next()) |entry| {
-            if (entry.key_ptr.ptr.meta == .heap) {
+            if (entry.key_ptr.ptr.impl.meta == .heap) {
                 try this.process(worklist, @ptrCast(&entry.key_ptr.ptr));
             }
-            if (entry.value_ptr.ptr.meta == .heap) {
+            if (entry.value_ptr.ptr.impl.meta == .heap) {
                 try this.process(worklist, @ptrCast(&entry.value_ptr.ptr));
             }
         }
     }
 
     fn process(this: *GC, worklist: *WorkList, ptrptr: *AnyObjHeaderPtr) !void {
-        if ((ptrptr.ptr << 3) == 0) {
-            std.debug.print("fuck", .{});
-        }
-        tyvm.debug_assert((ptrptr.ptr << 3) != 0);
-        const from_space_ptr: *ObjHeader = @ptrFromInt(@as(usize, ptrptr.ptr << 3));
+        tyvm.debug_assert(ptrptr.getPtr() != 0);
+        const from_space_ptr: *ObjHeader = @ptrFromInt(ptrptr.getPtr());
         // Already forwarded
         if (from_space_ptr.tag.lowtag == .forwarded) {
             tyvm.debug_assert((@intFromPtr(from_space_ptr.tag.forwarded_ptr()) & 0b111) == 0);
-            ptrptr.ptr = @intCast(@intFromPtr(from_space_ptr.tag.forwarded_ptr()) >> 3);
+            ptrptr.setPtr(from_space_ptr.tag.forwarded_ptr());
         }
         // Need to forward it
         else {
@@ -2701,7 +2745,7 @@ pub const GC = struct {
             from_space_ptr.tag.lowtag = .forwarded;
             tyvm.debug_assert((@intFromPtr(to_space_ptr) & 0b111) == 0);
             from_space_ptr.tag.ptrbits = @intCast(@intFromPtr(to_space_ptr) >> 3);
-            ptrptr.ptr = @intCast(@intFromPtr(to_space_ptr) >> 3);
+            ptrptr.setPtr(to_space_ptr);
         }
     }
 
