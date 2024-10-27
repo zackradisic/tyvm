@@ -12,7 +12,7 @@ type FibIter<
   N extends number,
   I extends number,
   NminusOne extends number,
-  NminusTwo extends number,
+  NminusTwo extends number
 > = N extends I
   ? Add<NminusOne, NminusTwo>
   : FibIter<N, Add<I, 1>, Add<NminusOne, NminusTwo>, NminusOne>;

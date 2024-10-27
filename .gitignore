@@ -1,4 +1,4 @@
 /target
 zig-out/
-zig-cache/
+.zig-cache/
 node_modules/

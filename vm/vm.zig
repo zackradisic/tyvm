@@ -2617,7 +2617,7 @@ pub const GC = struct {
 
     pub fn init(vm: *VM) !GC {
         const both: []u8 = brk: {
-            if (tyvm.isPosix) break :brk try std.os.mmap(null, SPACE_SIZE * 2, std.os.PROT.READ | std.os.PROT.WRITE, std.os.MAP.PRIVATE | std.os.MAP.ANONYMOUS, -1, 0);
+            if (tyvm.isPosix) break :brk try std.posix.mmap(null, SPACE_SIZE * 2, std.posix.PROT.READ | std.posix.PROT.WRITE, std.posix.MAP{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0);
             break :brk try std.heap.c_allocator.alignedAlloc(u8, 8, SPACE_SIZE * 2);
         };
         return .{

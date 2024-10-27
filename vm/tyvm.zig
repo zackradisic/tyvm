@@ -72,9 +72,9 @@ pub fn logger(comptime tag: anytype, comptime disabled: bool) _log_fn {
 
             if (!evaluated_disable) {
                 evaluated_disable = true;
-                if (std.os.getenv("TYVM_DEBUG_" ++ tagname)) |val| {
+                if (std.posix.getenv("TYVM_DEBUG_" ++ tagname)) |val| {
                     really_disable = std.mem.eql(u8, val, "0");
-                } else if (std.os.getenv("TYVM_DEBUG_LOGS")) |val| {
+                } else if (std.posix.getenv("TYVM_DEBUG_LOGS")) |val| {
                     really_disable = really_disable or std.mem.eql(u8, val, "0");
                 }
             }

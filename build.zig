@@ -15,13 +15,13 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
-    const is_wasm = target.cpu_arch != null and target.cpu_arch.?.isWasm();
+    const is_wasm = target.query.cpu_arch != null and target.query.cpu_arch.?.isWasm();
 
     const out = exe: {
         if (is_wasm) {
             var lib = b.addExecutable(.{
                 .name = "tyvm",
-                .root_source_file = .{ .path = "vm/main_wasm.zig" },
+                .root_source_file = .{ .cwd_relative = "vm/main_wasm.zig" },
                 .target = target,
                 .optimize = optimize,
                 .link_libc = true,
@@ -30,15 +30,15 @@ pub fn build(b: *std.Build) void {
             //     .cpu_arch = .wasm64,
             //     .os_tag = .emscripten,
             // };
-            lib.export_symbol_names = &.{ "init", "get_function", "get_global_function", "run", "alloc", "dealloc", "is_game", "jump", "reset" };
+            lib.root_module.export_symbol_names = &.{ "init", "get_function", "get_global_function", "run", "alloc", "dealloc", "is_game", "jump", "reset" };
             lib.initial_memory = 65536 * 65536;
             lib.max_memory = 65536 * 65536;
-            lib.dwarf_format = .@"32";
+            lib.root_module.dwarf_format = .@"32";
             break :exe lib;
         }
         const exe = b.addExecutable(.{
             .name = "tyvm",
-            .root_source_file = .{ .path = "vm/main.zig" },
+            .root_source_file = .{ .cwd_relative = "vm/main.zig" },
             .target = target,
             .optimize = optimize,
             .link_libc = true,
@@ -47,25 +47,24 @@ pub fn build(b: *std.Build) void {
     };
 
     out.linkSystemLibrary("tyvm_compiler");
-    out.addIncludePath(.{ .path = "./include" });
+    out.addIncludePath(.{ .cwd_relative = "./include" });
     if (is_wasm) {
         if (optimize == .Debug) {
-            out.addLibraryPath(.{ .path = "./target/wasm32-wasi/debug" });
+            out.addLibraryPath(.{ .cwd_relative = "./target/wasm32-wasi/debug" });
         } else {
-            out.addLibraryPath(.{ .path = "./target/wasm32-wasi/release" });
+            out.addLibraryPath(.{ .cwd_relative = "./target/wasm32-wasi/release" });
         }
     } else {
         if (optimize == .Debug) {
-            out.addLibraryPath(.{ .path = "./target/debug" });
+            out.addLibraryPath(.{ .cwd_relative = "./target/debug" });
         } else {
-            out.addLibraryPath(.{ .path = "./target/release" });
+            out.addLibraryPath(.{ .cwd_relative = "./target/release" });
         }
     }
 
     const ENABLE_DEBUG_SYMBOLS = true;
     if (comptime ENABLE_DEBUG_SYMBOLS) {
-        out.dll_export_fns = true;
-        out.strip = false;
+        out.root_module.strip = false;
         out.export_table = true;
         // out.symb
         out.linkLibC();
@@ -104,7 +103,7 @@ pub fn build(b: *std.Build) void {
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
     const unit_tests = b.addTest(.{
-        .root_source_file = .{ .path = "vm/vm.zig" },
+        .root_source_file = .{ .cwd_relative = "vm/vm.zig" },
         .target = target,
         .optimize = optimize,
     });

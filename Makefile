@@ -33,7 +33,7 @@ vm-wasm: zig-out/bin/tyvm.wasm site/public/tyvm.wasm
 
 .PHONY: clean
 clean:
-	rm -rf target zig-out zig-cache
+	rm -rf target zig-out .zig-cache
 
 run-wasm: vm-wasm
 	wasmtime ./zig-out/bin/tyvm.wasm --dir=.
