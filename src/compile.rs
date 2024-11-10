@@ -636,6 +636,12 @@ impl<'alloc> Compiler<'alloc> {
                         self.push_op(Op::Mul);
                         return;
                     }
+                    "Exp" => {
+                        assert_eq!(2, call.args.len());
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::Exp);
+                        return;
+                    }
                     "Div" => {
                         assert_eq!(2, call.args.len());
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
