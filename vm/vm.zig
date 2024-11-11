@@ -275,6 +275,11 @@ pub fn run(self: *VM, function: *const Function) !void {
                 const a = self.pop();
                 self.push(Value.number(a.Number / b.Number));
             },
+           .Exp => {
+                const b = self.pop();
+                const a = self.pop();
+                self.push(Value.number(std.math.pow(f64, a.Number, b.Number)));
+            },
             .Floor => {
                 const a = self.peek_ptr(0);
                 a.* = Value.number(@floor(a.Number));
@@ -1304,6 +1309,9 @@ pub const Function = struct {
                 .Div => {
                     std.debug.print("{} Div\n", .{j});
                 },
+                .Exp => {
+                    std.debug.print("{} Exp\n", .{j});
+                },
                 .Floor => {
                     std.debug.print("{} Floor\n", .{j});
                 },
@@ -1559,6 +1567,7 @@ const Op = enum(u8) {
     Sub,
     Mul,
     Div,
+    Exp,
     Floor,
     Mod,
     Eq,

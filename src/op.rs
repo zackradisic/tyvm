@@ -6,6 +6,7 @@ pub enum Op {
     Sub,
     Mul,
     Div,
+    Exp,
     Floor,
     Mod,
     Eq,

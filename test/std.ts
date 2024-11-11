@@ -7,6 +7,7 @@ export type Add<A extends number, B extends number> = number;
 export type Sub<A extends number, B extends number> = number;
 export type Mul<A extends number, B extends number> = number;
 export type Div<A extends number, B extends number> = number;
+export type Exp<A extends number, B extends number> = number;
 export type Lte<A extends number, B extends number> = boolean;
 export type Lt<A extends number, B extends number> = boolean;
 export type Gte<A extends number, B extends number> = boolean;
