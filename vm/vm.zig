@@ -275,7 +275,7 @@ pub fn run(self: *VM, function: *const Function) !void {
                 const a = self.pop();
                 self.push(Value.number(a.Number / b.Number));
             },
-           .Exp => {
+            .Exp => {
                 const b = self.pop();
                 const a = self.pop();
                 self.push(Value.number(std.math.pow(f64, a.Number, b.Number)));
@@ -875,9 +875,6 @@ fn make_array_spread(self: *VM, count: u32, spread_bitfield: u256) !void {
         return;
     }
 
-    tyvm.debug_assert(self.stack[0] == .Array);
-    tyvm.debug_assert(self.stack[0].Array.len == 1);
-    // tyvm.debug_assert(self.stack[0].Array.ptr.?[0] == .);
     var array = try self.gc.as_allocator().create(Array);
     array.* = .{
         .ptr = null,
