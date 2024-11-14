@@ -5,7 +5,7 @@ const tyvm = @import("./tyvm.zig");
 
 const print = std.debug.print;
 // const trace = tyvm.logger(.TRACE, true);
-const trace = tyvm.logger(.TRACE, false);
+const trace = tyvm.logger(.TRACE, !TRACING);
 
 const HashMap = std.AutoHashMap;
 pub fn StringMap(comptime V: type) type {
@@ -227,9 +227,18 @@ pub fn init(self: *VM) !void {
 }
 
 pub fn run(self: *VM, function: *const Function) !void {
-    std.debug.print("RUNNING!\n", .{});
     self.stack_top = self.stack[0..];
 
+    return self.run_impl(function);
+}
+
+pub fn run_with_args(self: *VM, function: *const Function, args: []const Value) !void {
+    @memcpy(self.stack[0..args.len], args);
+    self.stack_top = self.stack.ptr + args.len;
+    return self.run_impl(function);
+}
+
+pub fn run_impl(self: *VM, function: *const Function) !void {
     self.push_call_frame(.{
         .func = function,
         .ip = function.code.ptr,
@@ -1758,6 +1767,16 @@ pub const Value = union(ValueKind) {
     //     try writer.print("Value({})", .{this});
     // }
 
+    pub fn derive(vm: *VM, comptime T: type, val: T) !Value {
+        const tyinfo = @typeInfo(T);
+        return switch (tyinfo) {
+            .Struct => Value.object(try Object.from_struct(vm, T, val)),
+            .Bool => Value.boolean(val),
+            .Int => Value.number(@floatFromInt(val)),
+            .Float => Value.number(@floatCast(val)),
+        };
+    }
+
     fn as_anyobjheaderptr(self: *Value) ?*GC.AnyObjHeaderPtr {
         const ptr = self.as_anyobjheaderptr_impl();
         tyvm.debug_assert(ptr == null or @intFromPtr(ptr) % 8 == 0);
@@ -2438,6 +2457,24 @@ const Object = struct {
         }
     }
 
+    /// Compile-time generate code which converts a struct `T` into an object.
+    ///
+    /// This assumes that this function has ownership of `val.
+    pub fn derive_struct(vm: *VM, comptime T: type, val: T) !*Object {
+        const tyinfo = @typeInfo(T);
+        if (tyinfo != .Struct) @compileError("Only structs are supported");
+        const ty_fields = tyinfo.Struct.fields;
+        var fields: []Value = try vm.gc.as_allocator().alloc(Value, ty_fields.len);
+        var j: usize = 0;
+        inline for (ty_fields) |field| {
+            const str = try vm.intern_string(String.from_literal(field.name));
+            fields[j] = Value.string(str);
+            fields[j + 1] = Value.derive(vm, field.ty, @field(val, field.name));
+            j += 2;
+        }
+        return try Object.new(vm.gc, fields[0..]);
+    }
+
     pub fn new(gc: *GC, fields: []const Value) !*Object {
         tyvm.debug_assert(fields.len % 2 == 0);
 
@@ -2645,7 +2682,7 @@ pub const GC = struct {
         this.__virtual_roots_len -= 1;
     }
 
-    fn as_allocator(this: *GC) Allocator {
+    pub fn as_allocator(this: *GC) Allocator {
         return .{
             .ptr = @ptrCast(this),
             .vtable = &alloc_vtable,
