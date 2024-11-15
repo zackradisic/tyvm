@@ -96,3 +96,5 @@ pub fn logger(comptime tag: anytype, comptime disabled: bool) _log_fn {
         }
     }.log;
 }
+
+pub const jsonParse = @import("./json.zig").innerParse;

@@ -28,6 +28,7 @@ pub enum Op {
     ExtendsNoPopLeft,
     PanicExtends,
     Jump,
+    JumpGameState,
     Number,
     Boolean,
     String,

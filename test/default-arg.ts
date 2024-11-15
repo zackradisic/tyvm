@@ -5,7 +5,12 @@ type MyObj = {
   bar: string;
 };
 
-type MyFn<B extends MyObj, A extends MyObj = { foo: 420; bar: "lol" }> = {
+type globalString = "lol";
+
+type MyFn<
+  B extends MyObj,
+  A extends MyObj = { foo: 420; bar: globalString }
+> = {
   foo: B["foo"];
   bar: A["bar"];
 };

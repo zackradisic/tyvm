@@ -59,7 +59,6 @@ pub struct Compiler<'alloc> {
     interned_strings: BTreeMap<&'alloc str, ConstantTableIdx>,
 
     is_game: bool,
-    initial_state_index: Option<ConstantTableIdx>,
 }
 
 #[derive(Debug)]
@@ -393,16 +392,37 @@ impl<'alloc> Compiler<'alloc> {
         }
 
         for stmt in &program.stmts {
-            self.compile_statement(stmt)
+            self.compile_statement(stmt);
+            if let ir::Statement::LetDecl(ir::GlobalDecl::Fn(fn_decl)) = stmt {
+                if fn_decl.ident.name() == "Main" {
+                    if self.is_game {
+                        if fn_decl.params.len() != 2 {
+                            panic!("Main<...> must have 2 arguments in game mode")
+                        }
+                        if fn_decl.params[1].default.is_none() {
+                            panic!("Main<...> state argument must have a default value")
+                        }
+                    } else if fn_decl.params.len() != 1 {
+                        panic!("Main<...> must have 1 argument")
+                    }
+                }
+            }
         }
 
         if let Some(main_fn_name) = self.get_name_constant("Main") {
-            self.push_op_with_constant(Op::CallMain, main_fn_name);
-
-            if self.is_game && self.initial_state_index.is_none() {
-                panic!(
-                    "`InitialStateIndex` must be exported if RequestAnimationFrame<...> is called"
-                )
+            if self.is_game {
+                self.compile_array(&Expr::Any, false);
+                self.push_op(Op::JumpGameState);
+                let jump_idx_to_patch = self.cur_fn_mut().code.buf.len();
+                self.push_u16(u16::MAX);
+                let main_fn = self.functions.get(&main_fn_name).unwrap();
+                self.compile_expr(&main_fn.optional_params[0].expr);
+                let idx_to_jump_to = self.cur_fn_mut().code.buf.len();
+                self.patch_jump(idx_to_jump_to as u16, jump_idx_to_patch);
+                self.push_op_with_constant(Op::CallMain, main_fn_name);
+            } else {
+                self.compile_array(&Expr::Any, false);
+                self.push_op_with_constant(Op::CallMain, main_fn_name);
             }
         }
 
@@ -427,14 +447,6 @@ impl<'alloc> Compiler<'alloc> {
         self.compile_expr(&var_decl.expr);
         let name = var_decl.ident.name();
         let name = self.alloc_constant_string(name);
-
-        if var_decl.ident.name() == "InitialState" {
-            self.initial_state_index = Some(name);
-            self.main_chunk_mut()
-                .code
-                .push_op_with_constant(Op::SetInitialState, name);
-            return;
-        }
 
         self.main_chunk_mut()
             .code

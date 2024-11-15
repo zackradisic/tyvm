@@ -3,6 +3,7 @@ declare const __fnSym: unique symbol;
 
 export type VMRef = number & { __vmSym: typeof __vmSym };
 export type FnRef = number & { __fnSym: typeof __fnSym };
+export type KeydownEvent = { code: string };
 
 export type Exports = {
   init(sourcePtr: number, len: number): VMRef;
@@ -12,8 +13,7 @@ export type Exports = {
   alloc(size: number): number;
   dealloc(ptr: number, len: number): void;
   is_game(vm: VMRef): boolean;
-  jump(vm: VMRef): void;
-  reset(vm: VMRef): void;
+  keydown(vm: VMRef, eventPtr: number, len: number): boolean;
 };
 
 export type DrawCommandKindImage = 0;

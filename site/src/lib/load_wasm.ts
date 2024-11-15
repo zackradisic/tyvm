@@ -187,13 +187,16 @@ export const initWasm = async (
         // const globalFunctionRef = get_global_function(vmState.state!.vmRef);
         if (isGame) {
           window.addEventListener("keydown", (e) => {
-            if (e.code === "Space") {
-              e.preventDefault();
-              vmFns.jump(vmRef);
-            } else if (e.code === "Enter") {
-              e.preventDefault();
-              vmFns.reset(vmRef);
-            }
+            const event: Tyvm.KeydownEvent = { code: e.code };
+            const event_str = new TextEncoder().encode(JSON.stringify(event));
+            const ptr = vmFns.alloc(event_str.length);
+            const mem_buf = new Uint8Array(
+              memory.buffer,
+              ptr,
+              event_str.length
+            );
+            mem_buf.set(event_str);
+            vmFns.keydown(vmRef, ptr, event_str.byteLength);
           });
           const runGame = () => {
             if (panicked) return;
