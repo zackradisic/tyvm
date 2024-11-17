@@ -140,7 +140,8 @@ const instantiateWasm = async (
 };
 
 export const initWasm = async (
-  canvasRef: React.RefObject<HTMLCanvasElement | undefined>
+  canvasRef: React.RefObject<HTMLCanvasElement | undefined>,
+  srcUrl: string = "/flap.ts"
 ) => {
   let fds = [
     new OpenFile(new File([])), // stdin
@@ -161,7 +162,7 @@ export const initWasm = async (
     vmFns;
 
   // const programSource = fib
-  const programSource = await fetch("/flap.ts").then((res) => res.text());
+  const programSource = await fetch(srcUrl).then((res) => res.text());
 
   const progBinary = new TextEncoder().encode(programSource);
   const ptr = alloc(progBinary.byteLength);

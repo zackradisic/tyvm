@@ -24,8 +24,10 @@ export type RequestAnimFrame<
 export type Update<A, B> = {
   [K in keyof A]: K extends keyof B ? B[K] : A[K];
 };
+export type SetArray<A extends any[], B extends any, I extends number> = A;
 export type DrawCommandKindImage = 0;
 export type DrawCommandKindClearCanvas = 1;
+export type DrawCommandKindFill = 2;
 export type DrawCommand =
   | {
       type: DrawCommandKindImage;
@@ -41,5 +43,13 @@ export type DrawCommand =
       y: number;
       width: number;
       height: number;
+    }
+  | {
+      type: DrawCommandKindFill;
+      fillStyle: string;
+      x: number;
+      y: number;
+      w: number;
+      h: number;
     };
 export type AssertEq<A, B> = void;

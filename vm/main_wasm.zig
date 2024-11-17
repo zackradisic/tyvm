@@ -51,19 +51,34 @@ const KeydownEvent = struct {
 };
 
 pub export fn keydown(vm: *VM, ptr: [*]const u8, len: usize) bool {
+    return generate_event_handle_fn("OnKeydown", KeydownEvent, vm, ptr, len);
+}
+
+pub const MouseEvent = struct {
+    top: f64,
+    right: f64,
+    bottom: f64,
+    left: f64,
+
+    client_x: f64,
+    client_y: f64,
+};
+
+pub fn generate_event_handle_fn(comptime function_name: []const u8, comptime EventType: type, vm: *VM, ptr: [*]const u8, len: usize) bool {
     const json_str = ptr[0..len];
     defer std.heap.c_allocator.free(json_str);
 
-    const json = std.json.parseFromSlice(KeydownEvent, std.heap.c_allocator, json_str, .{}) catch @panic("FUCK");
+    const json = std.json.parseFromSlice(EventType, std.heap.c_allocator, json_str, .{}) catch @panic("FUCK");
     defer json.deinit();
 
-    const keydown_event = json.value;
+    const event = json.value;
 
-    const keydown_fn_str = vm.intern_string(VM.String.from_literal(VM.const_str("OnKeydown"))) catch |e| tyvm.oom(e);
-    const keydown_fn = vm.get_function(keydown_fn_str) orelse @panic("No function");
-    const keydown_value = VM.Value.derive(vm, KeydownEvent, keydown_event) catch |e| tyvm.oom(e);
-    const game_state = vm.game_state orelse @panic("Called OnKeydown without game state");
-    vm.run_with_args(keydown_fn, &.{ keydown_value, game_state }) catch |e| tyvm.oom(e);
+    const event_handle_fn_str = vm.intern_string(VM.String.from_literal(VM.const_str(function_name))) catch |e| tyvm.oom(e);
+    const event_handle_fn = vm.get_function(event_handle_fn_str) orelse @panic("No " ++ function_name ++ " function");
+    const event_value = VM.Value.derive(vm, EventType, event) catch |e| tyvm.oom(e);
+    const game_state = vm.game_state orelse @panic("Called " ++ function_name ++ " without game state");
+
+    vm.run_with_args(event_handle_fn, &.{ event_value, game_state }) catch |e| tyvm.oom(e);
     tyvm.debug_assert(@as(VM.ValueKind, (vm.stack_top - 1)[0]) == VM.ValueKind.Array);
     const return_value: VM.Value = (vm.stack_top - 1)[0];
 
@@ -71,6 +86,18 @@ pub export fn keydown(vm: *VM, ptr: [*]const u8, len: usize) bool {
     const prevent_default = return_value.Array.item_at_index(1);
     vm.game_state = state_value;
     return prevent_default.isTruthy();
+}
+
+pub export fn on_mouse_down(vm: *VM, ptr: [*]const u8, len: usize) bool {
+    return generate_event_handle_fn("OnMouseDown", MouseEvent, vm, ptr, len);
+}
+
+pub export fn on_mouse_up(vm: *VM, ptr: [*]const u8, len: usize) bool {
+    return generate_event_handle_fn("OnMouseUp", MouseEvent, vm, ptr, len);
+}
+
+pub export fn on_mouse_move(vm: *VM, ptr: [*]const u8, len: usize) bool {
+    return generate_event_handle_fn("OnMouseMove", MouseEvent, vm, ptr, len);
 }
 
 pub export fn is_game(vm: *VM) bool {
