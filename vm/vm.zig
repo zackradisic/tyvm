@@ -284,6 +284,16 @@ pub fn run(self: *VM, function: *const Function) !void {
                 const a = self.peek_ptr(0);
                 a.* = Value.number(@floor(a.Number));
             },
+            .Min => {
+                const b = self.pop();
+                const a = self.pop();
+                self.push(Value.number(@min(a.Number, b.Number)));
+            },
+            .Max => {
+                const b = self.pop();
+                const a = self.pop();
+                self.push(Value.number(@max(a.Number, b.Number)));
+            },
             .Mod => {
                 const b = self.pop();
                 const a = self.pop();
@@ -1312,6 +1322,12 @@ pub const Function = struct {
                 .Floor => {
                     std.debug.print("{} Floor\n", .{j});
                 },
+                .Min => {
+                    std.debug.print("{} Min\n", .{j});
+                },
+                .Max => {
+                    std.debug.print("{} Max\n", .{j});
+                },
                 .Mod => {
                     std.debug.print("{} Mod\n", .{j});
                 },
@@ -1566,6 +1582,8 @@ const Op = enum(u8) {
     Div,
     Exp,
     Floor,
+    Min,
+    Max,
     Mod,
     Eq,
     Lte,

@@ -654,6 +654,18 @@ impl<'alloc> Compiler<'alloc> {
                         self.push_op(Op::Floor);
                         return;
                     }
+                    "Min" => {
+                        assert_eq!(2, call.args.len());
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::Min);
+                        return;
+                    }
+                    "Max" => {
+                        assert_eq!(2, call.args.len());
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::Max);
+                        return;
+                    }
                     "Mod" => {
                         assert_eq!(2, call.args.len());
                         call.args.iter().for_each(|arg| self.compile_expr(arg));
