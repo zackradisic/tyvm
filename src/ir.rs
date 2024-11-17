@@ -244,6 +244,8 @@ pub struct FnDecl<'ir> {
     pub ident: Ident<'ir>,
     pub body: Expr<'ir>,
     pub params: AllocVec<'ir, FnParam<'ir>>,
+    pub required_params: u32,
+    pub optional_params: u32,
 }
 
 #[derive(Debug)]

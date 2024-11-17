@@ -66,17 +66,27 @@ type DrawCommand =
       height: number;
     };
 
-type GameState = {
+export type State = {
   birdY: number;
   velocity: number;
-  pipes: Array<Pipe>;
-  drawCommands: Array<DrawCommand>;
+  pipes: Pipe[];
+  drawCommands: DrawCommand[];
   jumpInput: boolean;
-  isCollided: boolean;
   reset: boolean;
+  isCollided: boolean;
 };
 
-type PossiblyResetGame<S extends GameState> = S["reset"] extends true
+export type InitialState = {
+  birdY: Div<canvasHeight, 2>;
+  velocity: 0;
+  pipes: MakeDefaultPipes<pipesAmount, [], canvasWidth>;
+  drawCommands: [];
+  jumpInput: false;
+  reset: false;
+  isCollided: false;
+};
+
+type PossiblyResetGame<S extends State> = S["reset"] extends true
   ? Update<
       S,
       {
@@ -89,7 +99,7 @@ type PossiblyResetGame<S extends GameState> = S["reset"] extends true
     >
   : S;
 
-type ApplyJump<S extends GameState> = S["isCollided"] extends true
+type ApplyJump<S extends State> = S["isCollided"] extends true
   ? S
   : Update<
       S,
@@ -99,7 +109,7 @@ type ApplyJump<S extends GameState> = S["isCollided"] extends true
       }
     >;
 
-type ApplyGravity<S extends GameState> = Update<
+type ApplyGravity<S extends State> = Update<
   S,
   {
     birdY: Add<S["birdY"], Mul<S["velocity"], 0.5>>;
@@ -159,7 +169,7 @@ type CheckPipeCollisions<
     : CheckPipeCollisions<BirdX, BirdY, Add<I, 1>, Pipes>
   : false;
 
-type CheckCollision<S extends GameState> = Gte<
+type CheckCollision<S extends State> = Gte<
   Add<S["birdY"], birdHeight>,
   canvasHeight
 > extends true
@@ -216,7 +226,7 @@ type MovePipesImpl<
     : false
   : Acc;
 
-type UpdatePipes<S extends GameState> = Update<
+type UpdatePipes<S extends State> = Update<
   S,
   { pipes: MovePipesImpl<S["pipes"], 0, []> }
 >;
@@ -253,7 +263,7 @@ type DrawPipes<
     : Acc
   : Acc;
 
-type Draw<S extends GameState> = Update<
+type Draw<S extends State> = Update<
   S,
   {
     drawCommands: S["isCollided"] extends true
@@ -306,20 +316,32 @@ type Draw<S extends GameState> = Update<
   }
 >;
 
-type InitialState = {
-  birdY: Div<canvasHeight, 2>;
-  velocity: 0;
-  pipes: MakeDefaultPipes<pipesAmount, [], canvasWidth>;
-  drawCommands: [];
-  jumpInput: false;
-  reset: false;
-  isCollided: false;
+type KeydownEvent = {
+  code: string;
 };
 
-export type Main<_Argv extends string[]> = RequestAnimFrame<
+export type OnKeydown<
+  E extends KeydownEvent,
+  S extends State,
+> = E["code"] extends "Space"
+  ? [Update<S, { jumpInput: true }>, true]
+  : E["code"] extends "Enter"
+  ? [Update<S, { reset: true }>, true]
+  : [S, false];
+
+export type Main<
+  _Argv extends string[],
+  S extends State = {
+    birdY: Div<canvasHeight, 2>;
+    velocity: 0;
+    pipes: MakeDefaultPipes<pipesAmount, [], canvasWidth>;
+    drawCommands: [];
+    jumpInput: false;
+    reset: false;
+    isCollided: false;
+  },
+> = RequestAnimFrame<
   Draw<
-    CheckCollision<
-      UpdatePipes<ApplyGravity<ApplyJump<PossiblyResetGame<InitialState>>>>
-    >
+    CheckCollision<UpdatePipes<ApplyGravity<ApplyJump<PossiblyResetGame<S>>>>>
   >
 >;

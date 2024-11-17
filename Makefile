@@ -1,4 +1,4 @@
-RELEASE=0
+# RELEASE=1
 ifeq ($(RELEASE), 1)
     CARGO_FLAGS=--release
 	ZIG_FLAGS=-Doptimize=ReleaseSafe

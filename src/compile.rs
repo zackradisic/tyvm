@@ -1,8 +1,10 @@
+use core::panic;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::mem::size_of;
 use std::num::NonZeroUsize;
 use std::ops::Range;
+use std::option;
 use std::thread::panicking;
 
 use crate::common::AllocBox as Box;
@@ -57,7 +59,6 @@ pub struct Compiler<'alloc> {
     interned_strings: BTreeMap<&'alloc str, ConstantTableIdx>,
 
     is_game: bool,
-    initial_state_index: Option<ConstantTableIdx>,
 }
 
 #[derive(Debug)]
@@ -65,6 +66,18 @@ pub struct Function<'alloc> {
     locals: Locals<'alloc>,
     code: Code,
     name: Option<ConstantTableIdx>,
+    optional_params: Vec<OptionalParam<'alloc>>,
+    required_params_count: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct OptionalParam<'alloc> {
+    expr: &'alloc Expr<'alloc>,
+    /// The index of the instruction directly after
+    /// the code to check the param type
+    ///
+    /// This is used to skip the check if the param is optional.
+    param_skip_instr_idx: usize,
 }
 
 #[repr(C, align(8))]
@@ -149,6 +162,8 @@ impl<'alloc> Compiler<'alloc> {
             Function {
                 locals: Locals::default(),
                 code: Code::default(),
+                required_params_count: 0,
+                optional_params: Default::default(),
                 name: None,
             },
         );
@@ -295,11 +310,15 @@ impl<'alloc> Compiler<'alloc> {
     }
 
     fn push_u32(&mut self, val: u32) {
-        self.cur_fn_mut().code.push_u32(val)
+        self.cur_fn_mut().code.push_u32(val);
     }
 
     fn push_op_with_constant(&mut self, op: Op, constant: ConstantTableIdx) {
         self.cur_fn_mut().code.push_op_with_constant(op, constant)
+    }
+
+    fn push_u16(&mut self, a: u16) {
+        self.cur_fn_mut().code.push_u16(a);
     }
 
     fn push_u8(&mut self, a: u8) {
@@ -340,6 +359,25 @@ impl<'alloc> Compiler<'alloc> {
                                 locals: Locals::default(),
                                 code: Code::default(),
                                 name: Some(name),
+                                optional_params: 'params: {
+                                    if fn_decl.optional_params == 0 {
+                                        break 'params Default::default();
+                                    }
+
+                                    let optional_start_idx =
+                                        fn_decl.params.len() - (fn_decl.optional_params as usize);
+
+                                    fn_decl
+                                        .params
+                                        .iter()
+                                        .skip(optional_start_idx)
+                                        .map(|optional_param| OptionalParam {
+                                            expr: optional_param.default.as_ref().unwrap(),
+                                            param_skip_instr_idx: usize::MAX,
+                                        })
+                                        .collect()
+                                },
+                                required_params_count: fn_decl.required_params,
                             },
                         );
                     }
@@ -354,16 +392,37 @@ impl<'alloc> Compiler<'alloc> {
         }
 
         for stmt in &program.stmts {
-            self.compile_statement(stmt)
+            self.compile_statement(stmt);
+            if let ir::Statement::LetDecl(ir::GlobalDecl::Fn(fn_decl)) = stmt {
+                if fn_decl.ident.name() == "Main" {
+                    if self.is_game {
+                        if fn_decl.params.len() != 2 {
+                            panic!("Main<...> must have 2 arguments in game mode")
+                        }
+                        if fn_decl.params[1].default.is_none() {
+                            panic!("Main<...> state argument must have a default value")
+                        }
+                    } else if fn_decl.params.len() != 1 {
+                        panic!("Main<...> must have 1 argument")
+                    }
+                }
+            }
         }
 
         if let Some(main_fn_name) = self.get_name_constant("Main") {
-            self.push_op_with_constant(Op::CallMain, main_fn_name);
-
-            if self.is_game && self.initial_state_index.is_none() {
-                panic!(
-                    "`InitialStateIndex` must be exported if RequestAnimationFrame<...> is called"
-                )
+            if self.is_game {
+                self.compile_array(&Expr::Any, false);
+                self.push_op(Op::JumpGameState);
+                let jump_idx_to_patch = self.cur_fn_mut().code.buf.len();
+                self.push_u16(u16::MAX);
+                let main_fn = self.functions.get(&main_fn_name).unwrap();
+                self.compile_expr(&main_fn.optional_params[0].expr);
+                let idx_to_jump_to = self.cur_fn_mut().code.buf.len();
+                self.patch_jump(idx_to_jump_to as u16, jump_idx_to_patch);
+                self.push_op_with_constant(Op::CallMain, main_fn_name);
+            } else {
+                self.compile_array(&Expr::Any, false);
+                self.push_op_with_constant(Op::CallMain, main_fn_name);
             }
         }
 
@@ -389,14 +448,6 @@ impl<'alloc> Compiler<'alloc> {
         let name = var_decl.ident.name();
         let name = self.alloc_constant_string(name);
 
-        if var_decl.ident.name() == "InitialState" {
-            self.initial_state_index = Some(name);
-            self.main_chunk_mut()
-                .code
-                .push_op_with_constant(Op::SetInitialState, name);
-            return;
-        }
-
         self.main_chunk_mut()
             .code
             .push_op_with_constant(Op::SetGlobal, name);
@@ -407,14 +458,48 @@ impl<'alloc> Compiler<'alloc> {
         let name_constant = self.alloc_constant_string(name);
         let prev_name = std::mem::replace(&mut self.current_function_name, name_constant);
         let func = self.functions.get_mut(&name_constant).unwrap();
+
         for arg in &fn_decl.params {
             func.locals.push(arg.ident.name());
         }
-        fn_decl
-            .params
-            .iter()
-            .enumerate()
-            .for_each(|(idx, param)| self.compile_fn_param_check(param, idx as u8));
+        let mut optional_idx: usize = 0;
+        for (idx, param) in fn_decl.params.iter().enumerate() {
+            // One optimization here is for optional params with default values.
+            //
+            // Obviously, we want to skip `extends` checks for default values.
+            //
+            // The way to do that is to emit the optional param checks first,
+            // in reverse order. This way, based on the count of arguments passed into the function,
+            // we can skip the checks:
+            //
+            // ```ts
+            // type Foo<A extends number, B extends number = 420, C extends number = 69> = A
+            //
+            // type result = Foo<420, 123> // we don't need to check C because it uses the default value
+            // ```
+            //
+            // The layouf of instructions would be something like this:
+            // - Instructions for param check for C
+            // - Instructions for param check for B
+            // - Instructions for param check for A
+            //
+            // The function would store a jump table that would jump to the first *needed* param check.
+            //
+            // BUT, completely skipping these checks would not be correct. Because the user could supply a default value which is not correct!
+            //
+            // ```ts
+            // type Foo<A extends number = "lmao uh oh"> = A
+            // ```
+            //
+            // So to fix this, we should emit checks to ascertain that the default value is sound, and memoize the result.
+            self.compile_fn_param_check(param, idx as u8);
+            if param.default.is_some() {
+                // TODO bring this back
+                // func.optional_params[optional_idx].param_skip_instr_idx =
+                //     self.cur_fn_mut().code.buf.len();
+                // optional_idx += 1;
+            }
+        }
         self.compile_expr(&fn_decl.body);
 
         // if name_constant == MAIN_STR_TABLE_IDX && self.is_game {
@@ -433,11 +518,10 @@ impl<'alloc> Compiler<'alloc> {
         if let Some(extends_ty) = &param.extends_type {
             self.push_bytes(Op::GetLocal as u8, local_idx);
             println!("EXTENDS TY: {:#?}", extends_ty);
+            // TODO: If the default value is large and costly to construct, we should
+            // pre-construct it and store it somewhere. Probably lazily as well.
             self.compile_expr(extends_ty);
             self.push_op(Op::PanicExtends);
-        }
-        if param.default.is_some() {
-            todo!("Default parameters");
         }
     }
 
@@ -779,14 +863,49 @@ impl<'alloc> Compiler<'alloc> {
                     }
                     _ => {
                         println!("NAME: {:?}", call.name);
+                        let name_str: &str = &call.name;
                         let name_constant = self.alloc_constant_string(call.name);
-                        // call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        {
+                            let Some(function) = self.functions.get(&name_constant) else {
+                                panic!("Unknown function name! {:?}", name_str)
+                            };
+                            if (count as u32) < function.required_params_count {
+                                panic!("Not enough arguments for function {:?}", name_str);
+                            }
+                        }
                         for arg in call.args.iter() {
                             self.compile_expr(arg);
                         }
-                        let name_str: &str = &call.name;
-                        if !self.functions.contains_key(&name_constant) {
+                        let Some(function) = self.functions.get(&name_constant) else {
                             panic!("Unknown function name! {:?}", name_str)
+                        };
+                        let function_args_count = (function.required_params_count as usize)
+                            + function.optional_params.len();
+                        if function.optional_params.len() > 0
+                            && call.args.len()
+                                < (function.required_params_count as usize)
+                                    + function.optional_params.len()
+                        {
+                            let start = call.args.len() - function.required_params_count as usize;
+                            // let start = (function.required_params_count as usize)
+                            //     + function.optional_params.len()
+                            //     - call.args.len();
+
+                            // Don't like doing this but we have to
+                            let optional_params = function.optional_params.clone();
+                            // drop(function);
+                            for default_arg in optional_params.iter().skip(start) {
+                                self.compile_expr(default_arg.expr);
+                            }
+
+                            // let skip_idx =
+                            //     self.functions.get(&name_constant).unwrap().optional_params
+                            //         [optional_param_count]
+                            //         .param_skip_instr_idx;
+
+                            // // Skip the checks for the optional params
+                            // self.push_u16(skip_idx as u16);
+                            // self.push_op(Op::Jump);
                         }
 
                         self.push_bytes(
@@ -795,7 +914,7 @@ impl<'alloc> Compiler<'alloc> {
                             } else {
                                 Op::Call as u8
                             },
-                            count,
+                            function_args_count as u8,
                         );
                         self.push_constant(name_constant);
                     }
@@ -890,6 +1009,26 @@ impl<'alloc> Compiler<'alloc> {
                 return;
             }
         }
+        // It might be a function with only optional parameters, in which case simply referring to the identifier
+        // counts as calling it:
+        // ```ts
+        // type MyFn<A extends number = 420 = A;
+        //
+        // type foo = MyFn; // 420
+        // ```
+        if let Some(constant_table_idx) = self.interned_strings.get(ident.name()).cloned() {
+            if let Some(fn_decl) = self.functions.get(&constant_table_idx) {
+                if fn_decl.optional_params.len() > 0 && fn_decl.required_params_count == 0 {
+                    self.push_op_with_constant(Op::Call, constant_table_idx);
+                    return;
+                }
+                panic!(
+                    "Called function {:?} with no arguments, must have at least: {:?}",
+                    ident.name(),
+                    fn_decl.required_params_count
+                );
+            }
+        }
         panic!("Unknown ident: {:?}", name_str)
     }
 
@@ -975,6 +1114,10 @@ impl Code {
 
     pub fn push_u8(&mut self, val: u8) {
         self.buf.push(val)
+    }
+
+    pub fn push_u16(&mut self, val: u16) {
+        self.buf.extend(val.to_le_bytes())
     }
 
     pub fn push_u32(&mut self, val: u32) {

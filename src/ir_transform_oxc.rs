@@ -96,6 +96,15 @@ impl<'input, 'ir> Transform<'ir> {
     ) -> GlobalDecl<'ir> {
         let ident = binding_ident_to_identifier(self.arena, &alias_decl.id);
         if let Some(params) = &alias_decl.type_parameters {
+            // Validate optional params. They must be at the end of the parameter list
+            let mut optional_param_count: u32 = 0;
+            for param in params.params.iter() {
+                if param.default.is_some() {
+                    optional_param_count += 1;
+                } else if optional_param_count > 0 {
+                    panic!("Optional parameters must be at the end of the parameter list. At function declaration for: {:?}", ident);
+                }
+            }
             return GlobalDecl::Fn(Box(self.arena.alloc(FnDecl {
                 ident,
                 body: self.transform_type(&alias_decl.type_annotation, false),
@@ -106,6 +115,8 @@ impl<'input, 'ir> Transform<'ir> {
                         .map(|p| self.transform_ts_type_param(&p)),
                     self.arena,
                 ),
+                required_params: params.params.len() as u32 - optional_param_count,
+                optional_params: optional_param_count,
             })));
         }
 

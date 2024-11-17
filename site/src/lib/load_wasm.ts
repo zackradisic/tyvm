@@ -140,7 +140,8 @@ const instantiateWasm = async (
 };
 
 export const initWasm = async (
-  canvasRef: React.RefObject<HTMLCanvasElement | undefined>
+  canvasRef: React.RefObject<HTMLCanvasElement | undefined>,
+  srcUrl: string = "/flap.ts"
 ) => {
   let fds = [
     new OpenFile(new File([])), // stdin
@@ -161,7 +162,7 @@ export const initWasm = async (
     vmFns;
 
   // const programSource = fib
-  const programSource = await fetch("/flap.ts").then((res) => res.text());
+  const programSource = await fetch(srcUrl).then((res) => res.text());
 
   const progBinary = new TextEncoder().encode(programSource);
   const ptr = alloc(progBinary.byteLength);
@@ -187,13 +188,16 @@ export const initWasm = async (
         // const globalFunctionRef = get_global_function(vmState.state!.vmRef);
         if (isGame) {
           window.addEventListener("keydown", (e) => {
-            if (e.code === "Space") {
-              e.preventDefault();
-              vmFns.jump(vmRef);
-            } else if (e.code === "Enter") {
-              e.preventDefault();
-              vmFns.reset(vmRef);
-            }
+            const event: Tyvm.KeydownEvent = { code: e.code };
+            const event_str = new TextEncoder().encode(JSON.stringify(event));
+            const ptr = vmFns.alloc(event_str.length);
+            const mem_buf = new Uint8Array(
+              memory.buffer,
+              ptr,
+              event_str.length
+            );
+            mem_buf.set(event_str);
+            vmFns.keydown(vmRef, ptr, event_str.byteLength);
           });
           const runGame = () => {
             if (panicked) return;

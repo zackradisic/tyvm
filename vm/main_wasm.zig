@@ -28,7 +28,7 @@ pub export fn init(source_ptr: [*]u8, len: usize) *VM {
     return vm_ptr;
 }
 
-pub export fn get_function(vm: *VM, fn_name_ptr: [*]u8, fn_name_len: usize) ?*const VM.Function {
+pub export fn get_function(vm: *VM, fn_name_ptr: [*]align(8) u8, fn_name_len: usize) ?*const VM.Function {
     tyvm.debug_assert(@intFromPtr(fn_name_ptr) % 8 == 0);
     const str = VM.String.from_literal(fn_name_ptr[0..fn_name_len]);
     return vm.get_function(str);
@@ -46,18 +46,58 @@ pub export fn run(vm: *VM, function: *const VM.Function) void {
     vm.run(function) catch @panic("OOM");
 }
 
-pub export fn jump(vm: *VM) void {
-    if (!vm.is_game) @panic("Can only call if is a game");
-    const initial_state: *VM.Value = vm.globals.getPtr(vm.initial_state_index.?).?;
-    const jump_input = vm.intern_string(VM.String.from_literal("jumpInput")) catch |e| tyvm.oom(e);
-    initial_state.Object.update_field(jump_input, VM.Value.boolean(true));
+const KeydownEvent = struct {
+    code: []const u8,
+};
+
+pub export fn keydown(vm: *VM, ptr: [*]const u8, len: usize) bool {
+    return generate_event_handle_fn("OnKeydown", KeydownEvent, vm, ptr, len);
 }
 
-pub export fn reset(vm: *VM) void {
-    if (!vm.is_game) @panic("Can only call if is a game");
-    const initial_state: *VM.Value = vm.globals.getPtr(vm.initial_state_index.?).?;
-    const reset_val = vm.intern_string(VM.String.from_literal("reset")) catch @panic("OOM");
-    initial_state.Object.update_field(reset_val, VM.Value.boolean(true));
+pub const MouseEvent = struct {
+    top: f64,
+    right: f64,
+    bottom: f64,
+    left: f64,
+
+    client_x: f64,
+    client_y: f64,
+};
+
+pub fn generate_event_handle_fn(comptime function_name: []const u8, comptime EventType: type, vm: *VM, ptr: [*]const u8, len: usize) bool {
+    const json_str = ptr[0..len];
+    defer std.heap.c_allocator.free(json_str);
+
+    const json = std.json.parseFromSlice(EventType, std.heap.c_allocator, json_str, .{}) catch @panic("FUCK");
+    defer json.deinit();
+
+    const event = json.value;
+
+    const event_handle_fn_str = vm.intern_string(VM.String.from_literal(VM.const_str(function_name))) catch |e| tyvm.oom(e);
+    const event_handle_fn = vm.get_function(event_handle_fn_str) orelse @panic("No " ++ function_name ++ " function");
+    const event_value = VM.Value.derive(vm, EventType, event) catch |e| tyvm.oom(e);
+    const game_state = vm.game_state orelse @panic("Called " ++ function_name ++ " without game state");
+
+    vm.run_with_args(event_handle_fn, &.{ event_value, game_state }) catch |e| tyvm.oom(e);
+    tyvm.debug_assert(@as(VM.ValueKind, (vm.stack_top - 1)[0]) == VM.ValueKind.Array);
+    const return_value: VM.Value = (vm.stack_top - 1)[0];
+
+    const state_value = return_value.Array.item_at_index(0);
+    const prevent_default = return_value.Array.item_at_index(1);
+    vm.game_state = state_value;
+    return prevent_default.isTruthy();
+}
+
+pub export fn on_mouse_down(vm: *VM, ptr: [*]const u8, len: usize) bool {
+    return generate_event_handle_fn("OnMouseDown", MouseEvent, vm, ptr, len);
+}
+
+pub export fn on_mouse_up(vm: *VM, ptr: [*]const u8, len: usize) bool {
+    return generate_event_handle_fn("OnMouseUp", MouseEvent, vm, ptr, len);
+}
+
+pub export fn on_mouse_move(vm: *VM, ptr: [*]const u8, len: usize) bool {
+    return generate_event_handle_fn("OnMouseMove", MouseEvent, vm, ptr, len);
 }
 
 pub export fn is_game(vm: *VM) bool {
