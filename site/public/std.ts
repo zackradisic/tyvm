@@ -16,6 +16,8 @@ export type Or<A extends boolean, B extends boolean> = boolean;
 export type WriteFile<Path extends string, Content extends string> = never;
 export type ToTypescriptSource<Name extends string, T extends any> = never;
 export type Panic<Msg extends string> = never;
+export type NewArray<T, N extends number> = T[];
+export type Fill<A extends any[], B extends any> = A;
 export type RequestAnimFrame<
   State extends { drawCommands: Array<DrawCommand> },
 > = void;

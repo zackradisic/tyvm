@@ -265,7 +265,7 @@ impl<'input, 'ir> Transform<'ir> {
                                 .map(|t| &*self.arena.alloc(self.transform_type(&t, false))),
                             then: self
                                 .arena
-                                .alloc(self.transform_type(&cond_ty.true_type, false)),
+                                .alloc(self.transform_type(&cond_ty.true_type, true)),
                             r#else: self
                                 .arena
                                 .alloc(self.transform_type(&cond_ty.false_type, true)),

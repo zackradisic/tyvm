@@ -4,6 +4,15 @@ declare const __fnSym: unique symbol;
 export type VMRef = number & { __vmSym: typeof __vmSym };
 export type FnRef = number & { __fnSym: typeof __fnSym };
 export type KeydownEvent = { code: string };
+export type MouseEvent = {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+
+  client_x: number;
+  client_y: number;
+};
 
 export type Exports = {
   init(sourcePtr: number, len: number): VMRef;
@@ -14,10 +23,14 @@ export type Exports = {
   dealloc(ptr: number, len: number): void;
   is_game(vm: VMRef): boolean;
   keydown(vm: VMRef, eventPtr: number, len: number): boolean;
+  on_mouse_down(vm: VMRef, eventPtr: number, len: number): boolean;
+  on_mouse_up(vm: VMRef, eventPtr: number, len: number): boolean;
+  on_mouse_move(vm: VMRef, eventPtr: number, len: number): boolean;
 };
 
 export type DrawCommandKindImage = 0;
 export type DrawCommandKindClearCanvas = 1;
+export type DrawCommandKindFill = 2;
 export type DrawCommand =
   | {
       type: DrawCommandKindImage;
@@ -29,10 +42,15 @@ export type DrawCommand =
     }
   | {
       type: DrawCommandKindClearCanvas;
+      color: string;
+    }
+  | {
+      type: DrawCommandKindFill;
+      fillStyle: string;
       x: number;
       y: number;
-      width: number;
-      height: number;
+      w: number;
+      h: number;
     };
 
 const drawCmd: DrawCommand = {

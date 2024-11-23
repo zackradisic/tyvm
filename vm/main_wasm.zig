@@ -64,7 +64,11 @@ pub const MouseEvent = struct {
     client_y: f64,
 };
 
-pub fn generate_event_handle_fn(comptime function_name: []const u8, comptime EventType: type, vm: *VM, ptr: [*]const u8, len: usize) bool {
+pub fn generate_event_handle_fn(comptime function_name: anytype, comptime EventType: type, vm: *VM, ptr: [*]const u8, len: usize) bool {
+    std.debug.print("LOOOL: {s}\n", .{function_name});
+    const event_handle_fn_str = vm.intern_string(VM.String.from_literal(VM.const_str(function_name))) catch |e| tyvm.oom(e);
+    const event_handle_fn = vm.get_function(event_handle_fn_str) orelse return false; // TODO cache this
+
     const json_str = ptr[0..len];
     defer std.heap.c_allocator.free(json_str);
 
@@ -73,8 +77,6 @@ pub fn generate_event_handle_fn(comptime function_name: []const u8, comptime Eve
 
     const event = json.value;
 
-    const event_handle_fn_str = vm.intern_string(VM.String.from_literal(VM.const_str(function_name))) catch |e| tyvm.oom(e);
-    const event_handle_fn = vm.get_function(event_handle_fn_str) orelse @panic("No " ++ function_name ++ " function");
     const event_value = VM.Value.derive(vm, EventType, event) catch |e| tyvm.oom(e);
     const game_state = vm.game_state orelse @panic("Called " ++ function_name ++ " without game state");
 
