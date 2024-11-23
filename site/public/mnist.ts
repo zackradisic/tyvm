@@ -97,8 +97,6 @@ type Draw<S extends State> = Update<
   S,
   {
     drawCommands: DrawGrid<S["grid"], 0, 0, [{ type: 1; color: "#fff" }]>;
-    grid: Modify<S["grid"]>;
-    isDrawing: false;
   }
 >;
 
