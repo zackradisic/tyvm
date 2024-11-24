@@ -3,6 +3,11 @@ const mem = std.mem;
 const raf = @import("raf.zig");
 const tyvm = @import("./tyvm.zig");
 
+const ALIGNMENT = tyvm.ALIGNMENT;
+const ALIGNMENT_FREE_BITS = tyvm.ALIGNMENT_FREE_BITS;
+const ALIGNMENT_FREE_MASK = tyvm.ALIGNMENT_FREE_MASK;
+const ALIGNMENT_UINT_TYPE = tyvm.ALIGNMENT_UINT_TYPE;
+
 const print = std.debug.print;
 // const trace = tyvm.logger(.TRACE, true);
 const trace = tyvm.logger(.TRACE, !TRACING);
@@ -55,8 +60,8 @@ native_functions: StringMap(NativeFunction),
 /// As it is now, to look up a function we need to do: name (String) -> constant table idx -> function
 /// What if it were just: name -> function?
 functions: HashMap(ConstantTableIdx, Function),
-constant_table: []const ConstantTableEntry align(8),
-constant_pool: []const u8 align(8),
+constant_table: []const ConstantTableEntry align(ALIGNMENT),
+constant_pool: []const u8 align(ALIGNMENT),
 is_game: bool = false,
 game_state: ?Value = null,
 length_string: ?ConstantTableIdx = null,
@@ -145,7 +150,7 @@ fn load_bytecode(self: *VM, bytecode: []const u8) !void {
     trace("Load bytecode done\n", .{});
 }
 
-pub fn const_str(comptime str: anytype) []align(8) const u8 {
+pub fn const_str(comptime str: anytype) []align(ALIGNMENT) const u8 {
     // const buf = comptime brk: {
     //     var buf: [str.len + 8]u8 = undefined;
     //     @memcpy(buf[8..], str);
@@ -155,7 +160,7 @@ pub fn const_str(comptime str: anytype) []align(8) const u8 {
 
     const DummyStruct = extern struct {
         len: u32,
-        actualstr: [str.len]u8 align(8),
+        actualstr: [str.len]u8 align(ALIGNMENT),
 
         const DUMMY: @This() = .{ .len = @intCast(str.len), .actualstr = str.* };
         // actualstr: [str.len]u8 = str.*,
@@ -1194,7 +1199,7 @@ fn read_constant_number(self: *const VM, constant_idx: ConstantIdx) f64 {
 }
 
 fn read_constant_string(self: *const VM, constant_idx: ConstantIdx) String {
-    const ptr: *const extern struct { idx: u32 align(8), len: u32 } = @ptrCast(@alignCast(&self.constant_pool[constant_idx.v]));
+    const ptr: *const extern struct { idx: u32 align(ALIGNMENT), len: u32 } = @ptrCast(@alignCast(&self.constant_pool[constant_idx.v]));
     const constant_bytes_idx: u32 = ptr.idx;
     const slice_len: u32 = ptr.len;
     const bytesptr = self.read_constant_bytes(ConstantIdx{ .v = constant_bytes_idx });
@@ -1208,7 +1213,7 @@ fn read_constant_bytes(self: *const VM, constant_idx: ConstantIdx) BytesPtr {
     const entry = self.constant_table[constant_idx.v];
     const constant_bytes_ptr: [*]const u8 = @ptrCast(&self.constant_pool[entry.idx.v]);
     const actual_ptr: [*]const u8 = constant_bytes_ptr;
-    tyvm.debug_assert((@intFromPtr(actual_ptr) & 0b111) == 0);
+    tyvm.debug_assert((@intFromPtr(actual_ptr) & ALIGNMENT_FREE_MASK) == 0);
     return BytesPtr{
         .impl = BytesPtr.Impl.init(.constant, actual_ptr),
     };
@@ -1233,37 +1238,37 @@ fn read_constant_bytes(self: *const VM, constant_idx: ConstantIdx) BytesPtr {
 ///    - the table is just there to mark where to find each function and how large its bytecode is
 const Bytecode = struct {
     const Header = extern struct {
-        magic: u32 align(8),
+        magic: u32 align(ALIGNMENT),
         constants_offset: u32,
         functions_offset: u32,
         is_game: u32,
     };
 
     const ConstantsHeader = extern struct {
-        table_len: u32 align(8),
+        table_len: u32 align(ALIGNMENT),
         pool_size: u32,
         pool_padding: u32,
     };
 
     const FunctionsHeader = extern struct {
-        table_len: u32 align(8),
+        table_len: u32 align(ALIGNMENT),
         table_offset: u32,
         function_code_size: u32,
         function_code_padding: u32,
     };
 
     const FunctionTableEntry = struct {
-        name_constant_idx: ConstantTableIdx align(8),
+        name_constant_idx: ConstantTableIdx align(ALIGNMENT),
         offset: u32,
         size: u32,
     };
 };
 
 const ConstantBytes = extern struct {
-    len: u32 align(8),
+    len: u32 align(ALIGNMENT),
     _pad: u32 = 0,
 };
-const ConstantString = extern struct { len: u32 align(8), ptr: [*]const u8 };
+const ConstantString = extern struct { len: u32 align(ALIGNMENT), ptr: [*]const u8 };
 
 const ConstantTableIdx = extern struct {
     v: u32,
@@ -1283,7 +1288,7 @@ const ConstantIdx = extern struct {
 pub const ConstantKind = enum(u32) { Bool, Number, String, Bytes };
 
 const ConstantTableEntry = extern struct {
-    idx: ConstantIdx align(8),
+    idx: ConstantIdx align(ALIGNMENT),
     kind: ConstantKind,
 };
 
@@ -1603,7 +1608,7 @@ pub const Function = struct {
 };
 
 const NativeFunction = struct {
-    name: []align(8) const u8,
+    name: []align(ALIGNMENT) const u8,
     fn_ptr: *const fn (vm: *VM, []const Value) anyerror!Value,
     arg_types: []const Value,
 
@@ -1850,27 +1855,27 @@ pub const ObjTy = enum(u16) {
 /// forwarding ref in GC.collect()
 /// TODO: Fix this for wasm / 32 bit targets
 pub const ObjTag = packed struct(u64) {
-    /// All underlying objects will have alignment of 8 meaning we have these
-    /// extra 3 bits to play with
+    /// All underlying objects will have alignment of ALIGNMENT meaning we have these
+    /// extra ALIGNMENT_FREE_BITS bits to play with
     lowtag: enum(u1) {
         none = 0,
         forwarded = 1,
     },
     is_constant: bool = false,
-    __unused: u1 = 0,
+    __unused: u2 = 0,
     /// When lowtag == .none, these bits are meaningless and zeroed
     /// When lowtag == .forwarded, these bits represent the pointer of the
     /// allocation that has been moved
-    ptrbits: u45 = 0,
+    ptrbits: u44 = 0,
     tytag: ObjTy,
 
     pub fn format(this: ObjTag, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-        try writer.print("ObjTag(lowtag={s}, is_constant={}, ptr={d}, tytag={s})", .{ @tagName(this.lowtag), this.is_constant, @as(u64, @intCast(this.ptrbits)) << 3, @tagName(this.tytag) });
+        try writer.print("ObjTag(lowtag={s}, is_constant={}, ptr={d}, tytag={s})", .{ @tagName(this.lowtag), this.is_constant, @as(u64, @intCast(this.ptrbits)) << ALIGNMENT_FREE_BITS, @tagName(this.tytag) });
     }
 
     pub fn forwarded_ptr(this: ObjTag) *ObjHeader {
         tyvm.debug_assert(this.lowtag == .forwarded);
-        return @ptrFromInt(@as(usize, @intCast(this.ptrbits)) << 3);
+        return @ptrFromInt(@as(usize, @intCast(this.ptrbits)) << ALIGNMENT_FREE_BITS);
     }
 
     /// size excluding the obj tag
@@ -1937,7 +1942,7 @@ pub const Value = union(ValueKind) {
 
     fn as_anyobjheaderptr(self: *Value) ?*GC.AnyObjHeaderPtr {
         const ptr = self.as_anyobjheaderptr_impl();
-        tyvm.debug_assert(ptr == null or @intFromPtr(ptr) % 8 == 0);
+        tyvm.debug_assert(ptr == null or @intFromPtr(ptr) % ALIGNMENT == 0);
         return ptr;
     }
 
@@ -2212,23 +2217,23 @@ fn write_str_expand(alloc: Allocator, buf: *std.ArrayListUnmanaged(u8), comptime
 }
 
 /// Pointer to a `Bytes` object
-/// This *cannot* be cast into *Bytes or *ObjHeader.
-/// But you can get the pointer to both of these using member functions.
+/// This *cannot* be cast into *Bytes or *ObjHeader directly using @ptrCast.
+/// But can be casted using functions.
 const BytesPtr = packed struct(usize) {
-    const Meta = enum(u3) { constant = 0b100, literal = 0b110, heap = 0b010 };
+    const Meta = enum(u4) { constant = 0b100, literal = 0b110, heap = 0b010 };
     const Impl64 = packed struct(u64) {
         meta: Meta,
-        ptrbits: u45 = 0,
+        ptrbits: u44 = 0,
         ___unused: u16 = 0,
 
         pub fn getPtrUsize(this: Impl64) usize {
-            return @as(usize, this.ptrbits) << 3;
+            return @as(usize, this.ptrbits) << ALIGNMENT_FREE_BITS;
         }
 
         pub fn init(meta: Meta, ptr: [*]const u8) Impl64 {
             return Impl64{
                 .meta = meta,
-                .ptrbits = @intCast(@intFromPtr(ptr) >> 3),
+                .ptrbits = @intCast(@intFromPtr(ptr) >> ALIGNMENT_FREE_BITS),
             };
         }
     };
@@ -2237,13 +2242,13 @@ const BytesPtr = packed struct(usize) {
         ptrbits: u29 = 0,
 
         pub fn getPtrUsize(this: Impl32) usize {
-            return @as(usize, this.ptrbits) << 3;
+            return @as(usize, this.ptrbits) << ALIGNMENT_FREE_BITS;
         }
 
         pub fn init(meta: Meta, ptr: [*]const u8) Impl32 {
             return Impl32{
                 .meta = meta,
-                .ptrbits = @intCast(@intFromPtr(ptr) >> 3),
+                .ptrbits = @intCast(@intFromPtr(ptr) >> ALIGNMENT_FREE_BITS),
             };
         }
     };
@@ -2269,20 +2274,20 @@ const BytesPtr = packed struct(usize) {
     }
 
     pub fn newHeap(ptr: [*]const u8) BytesPtr {
-        tyvm.debug_assert((@intFromPtr(ptr) & 0b111) == 0);
+        tyvm.debug_assert((@intFromPtr(ptr) & ALIGNMENT_FREE_MASK) == 0);
         return BytesPtr{ .impl = Impl.init(.heap, ptr) };
     }
 
     pub fn newLiteral(ptr: [*]const u8) BytesPtr {
         trace("PTR: {d}", .{@intFromPtr(ptr)});
-        // Assert that the pointer is 8-byte aligned
-        tyvm.debug_assert((@intFromPtr(ptr) & 0b111) == 0);
+        // Assert that the pointer is ALIGNMENT-byte aligned
+        tyvm.debug_assert((@intFromPtr(ptr) & ALIGNMENT_FREE_MASK) == 0);
         return BytesPtr{ .impl = Impl.init(.literal, ptr) };
     }
 
     pub fn newConstant(ptr: [*]const u8) BytesPtr {
         trace("PTR: {d}", .{@intFromPtr(ptr)});
-        tyvm.debug_assert((@intFromPtr(ptr) & 0b111) == 0);
+        tyvm.debug_assert((@intFromPtr(ptr) & ALIGNMENT_FREE_MASK) == 0);
         return BytesPtr{ .impl = Impl.init(.constant, ptr) };
     }
 
@@ -2318,7 +2323,7 @@ const BytesPtr = packed struct(usize) {
             .constant => {
                 const constant: *ConstantBytes = this.__ptr(ConstantBytes);
                 const bytes_ptr: [*]const u8 = @as([*]const u8, @ptrCast(constant)) + @sizeOf(ConstantBytes);
-                tyvm.debug_assert(@intFromPtr(bytes_ptr) % 8 == 0);
+                tyvm.debug_assert(@intFromPtr(bytes_ptr) % ALIGNMENT == 0);
                 if (comptime slice) return bytes_ptr[0..constant.len];
                 return bytes_ptr;
             },
@@ -2330,9 +2335,9 @@ const BytesPtr = packed struct(usize) {
             .literal => {
                 const theptr: [*]const u8 = @ptrCast(this.__ptr(u8));
                 if (comptime slice) {
-                    // - 8 because we store length and the string bytes are align(8)
+                    // - 8 because we store length and the string bytes are align(ALIGNMENT)
                     // see `cons_str()` function
-                    const lenptr: *const u32 = @ptrCast(@alignCast(theptr - 8));
+                    const lenptr: *const u32 = @ptrCast(@alignCast(theptr - ALIGNMENT));
                     return theptr[0..lenptr.*];
                 }
                 return theptr;
@@ -2362,7 +2367,7 @@ const Bytes = struct {
         };
         const heap_slice: [*]u8 = @ptrCast(heap.ptr + @sizeOf(Bytes));
         @memcpy(heap_slice[0..slice.len], slice);
-        tyvm.debug_assert((@intFromPtr(bytes) & 0b111) == 0);
+        tyvm.debug_assert((@intFromPtr(bytes) & ALIGNMENT_FREE_MASK) == 0);
         return BytesPtr{
             .impl = BytesPtr.Impl.init(.heap, @ptrCast(bytes)),
         };
@@ -2382,7 +2387,7 @@ const Bytes = struct {
         const addr = try gc.create_impl(Bytes, false);
         addr.* = this.*;
         addr.obj = addr.obj.clearForwarded();
-        const bytes_addr = try gc.allocImpl(this.len, 8, false);
+        const bytes_addr = try gc.allocImpl(this.len, ALIGNMENT, false);
         const to_space_slice = bytes_addr[0..this.len];
         const from_space_slice = this.as_slice();
         @memcpy(to_space_slice, from_space_slice);
@@ -2402,25 +2407,25 @@ const Bytes = struct {
 /// - Strings are always interned, so two strings are equal if their pointer's are equal
 pub const String = struct {
     ptr: BytesPtr,
-    len: u32 align(8),
+    len: u32 align(ALIGNMENT), // I don't remember why I did this
 
     pub fn format(this: *const String, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
         try writer.print("String(\"{s}\", .ptr={})", .{ this.as_str(), this.ptr });
     }
 
     /// INVARIANTS:
-    /// - `s.ptr` is 8-byte aligned
+    /// - `s.ptr` is `ALIGNMENT`-byte aligned
     /// - `s` will not be GC'ed
     ///
     /// You MUST ensure you use `const_str(...)` to make the ptr aligned
-    pub fn from_literal(s: []align(8) const u8) String {
+    pub fn from_literal(s: []align(ALIGNMENT) const u8) String {
         return .{
             .ptr = BytesPtr.newLiteral(s.ptr),
             .len = @intCast(s.len),
         };
     }
 
-    pub fn from_slice(s: []align(8) const u8) String {
+    pub fn from_slice(s: []align(ALIGNMENT) const u8) String {
         return .{
             .ptr = BytesPtr.newHeap(s.ptr),
             .len = @intCast(s.len),
@@ -2821,25 +2826,25 @@ pub const GC = struct {
         const Impl64 = packed struct(u64) {
             /// We align every allocation to 8 bytes, so we know for certain the
             /// lower 3 bits will be zeroed
-            _: u3 = 0,
+            _: ALIGNMENT_UINT_TYPE = 0,
             // The actual pointer value
-            __ptr: u45 = 0,
+            __ptr: u44 = 0,
             /// Pointers only use 48 bits of address space
             __: u16 = 0,
         };
         const Impl32 = packed struct(u32) {
-            _: u3 = 0,
+            _: ALIGNMENT_UINT_TYPE = 0,
             __ptr: u29 = 0,
         };
         const Impl = if (tyvm.is64Bit) Impl64 else Impl32;
         impl: Impl,
 
         pub inline fn getPtr(this: AnyObjHeaderPtr) usize {
-            return @as(usize, this.impl.__ptr) << 3;
+            return @as(usize, this.impl.__ptr) << ALIGNMENT_FREE_BITS;
         }
 
         pub inline fn setPtr(this: *AnyObjHeaderPtr, ptr: *ObjHeader) void {
-            this.impl.__ptr = @intCast(@intFromPtr(ptr) >> 3);
+            this.impl.__ptr = @intCast(@intFromPtr(ptr) >> ALIGNMENT_FREE_BITS);
         }
     };
 
@@ -2867,14 +2872,14 @@ pub const GC = struct {
     // union.ts
     // const SPACE_SIZE = 4096;
     comptime {
-        std.debug.assert(SPACE_SIZE % 8 == 0);
+        std.debug.assert(SPACE_SIZE % 16 == 0);
     }
     // const SPACE_SIZE = 2049;
 
     pub fn init(vm: *VM) !GC {
         const both: []u8 = brk: {
             if (tyvm.isPosix) break :brk try std.posix.mmap(null, SPACE_SIZE * 2, std.posix.PROT.READ | std.posix.PROT.WRITE, std.posix.MAP{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0);
-            break :brk try std.heap.c_allocator.alignedAlloc(u8, 8, SPACE_SIZE * 2);
+            break :brk try std.heap.c_allocator.alignedAlloc(u8, ALIGNMENT, SPACE_SIZE * 2);
         };
         return .{
             .from_space = both.ptr,
@@ -2885,7 +2890,7 @@ pub const GC = struct {
 
     pub inline fn push_vroot(this: *GC, obj: **ObjHeader) void {
         if (this.__virtual_roots_len == VROOT_MAX) @panic("vroot stack overflow");
-        tyvm.debug_assert(@intFromPtr(obj.*) % 8 == 0);
+        tyvm.debug_assert(@intFromPtr(obj.*) % ALIGNMENT == 0);
         this.__virtual_roots[this.__virtual_roots_len] = obj;
         this.__virtual_roots_len += 1;
     }
@@ -2997,15 +3002,15 @@ pub const GC = struct {
         const from_space_ptr: *ObjHeader = @ptrFromInt(ptrptr.getPtr());
         // Already forwarded
         if (from_space_ptr.tag.lowtag == .forwarded) {
-            tyvm.debug_assert((@intFromPtr(from_space_ptr.tag.forwarded_ptr()) & 0b111) == 0);
+            tyvm.debug_assert((@intFromPtr(from_space_ptr.tag.forwarded_ptr()) & ALIGNMENT_FREE_MASK) == 0);
             ptrptr.setPtr(from_space_ptr.tag.forwarded_ptr());
         }
         // Need to forward it
         else {
             const to_space_ptr = try this.copy(worklist, from_space_ptr);
             from_space_ptr.tag.lowtag = .forwarded;
-            tyvm.debug_assert((@intFromPtr(to_space_ptr) & 0b111) == 0);
-            from_space_ptr.tag.ptrbits = @intCast(@intFromPtr(to_space_ptr) >> 3);
+            tyvm.debug_assert((@intFromPtr(to_space_ptr) & ALIGNMENT_FREE_MASK) == 0);
+            from_space_ptr.tag.ptrbits = @intCast(@intFromPtr(to_space_ptr) >> ALIGNMENT_FREE_BITS);
             ptrptr.setPtr(to_space_ptr);
         }
     }
@@ -3062,7 +3067,8 @@ pub const GC = struct {
     }
 
     fn __allocImpl(this: *GC, n: usize, log2_ptr_align: u29, _: usize, comptime allow_collect: bool) ?[*]u8 {
-        const ptr_align = @as(usize, 1) << @as(Allocator.Log2Align, @intCast(log2_ptr_align));
+        // const ptr_align = @as(usize, 1) << @as(Allocator.Log2Align, @intCast(log2_ptr_align));
+        const ptr_align = ALIGNMENT;
         const addr = this.bump;
         const adjusted_addr = mem.alignForward(usize, addr, ptr_align);
         const adjusted_index = this.bump + (adjusted_addr - addr);

@@ -2,6 +2,17 @@ const std = @import("std");
 
 const builtin = @import("builtin");
 
+/// The alignment of allocations on the heap.
+pub const ALIGNMENT = 16;
+comptime {
+    std.debug.assert(std.math.isPowerOfTwo(ALIGNMENT));
+}
+/// The unusued bits at the bottom of each pointer to an allocation due to it being aligned to `ALIGNMENT`.
+pub const ALIGNMENT_FREE_BITS = std.math.log2(ALIGNMENT);
+/// Mask to select the bottom unused bits of a pointer to a VM heap allocation.
+pub const ALIGNMENT_FREE_MASK = ALIGNMENT - 1;
+pub const ALIGNMENT_UINT_TYPE = std.meta.Int(.unsigned, ALIGNMENT_FREE_BITS);
+
 pub const BuildTarget = enum { native, wasm, wasi };
 pub const build_target: BuildTarget = brk: {
     if (@import("builtin").target.isWasm()) {

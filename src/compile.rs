@@ -21,6 +21,8 @@ pub const GLOBAL_STR_TABLE_IDX: ConstantTableIdx = ConstantTableIdx(0);
 pub const MAIN_STR_TABLE_IDX: ConstantTableIdx = ConstantTableIdx(2);
 const UNINIT_STR: &'static str = "uninitialized memory string if you see this its bad";
 
+const ALIGNMENT: usize = 16;
+
 pub trait Compile<'alloc> {
     fn compile(&self, compiler: &mut Compiler<'alloc>) {}
 }
@@ -48,7 +50,7 @@ pub struct Compiler<'alloc> {
     constant_table: Vec<ConstantEntry>,
     /// The constant pool section of the bytecode.
     /// INVARIANTS:
-    /// 1. All values in the pool are 8 byte aligned.
+    /// 1. All values in the pool are ALIGNMENT byte aligned.
     /// 2. All values in the pool are encoded in little endian order
     constants: Vec<u8>,
 
@@ -80,13 +82,14 @@ pub struct OptionalParam<'alloc> {
     param_skip_instr_idx: usize,
 }
 
-#[repr(C, align(8))]
+#[repr(C, align(16))]
 #[derive(
     Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, bytemuck::Pod, bytemuck::Zeroable,
 )]
 pub struct ConstantEntry {
     idx: ConstantIdx,
     kind: ConstantKind,
+    _pad: u64,
 }
 
 #[repr(u32)]
@@ -185,7 +188,7 @@ impl<'alloc> Compiler<'alloc> {
         let size = bytes.len();
 
         let len_size = size_of::<u32>();
-        let pad = 8 - len_size;
+        let pad = ALIGNMENT - len_size;
 
         let (idx, buf, range) = self.alloc_constant_with_len(
             ConstantKind::Bytes,
@@ -252,14 +255,14 @@ impl<'alloc> Compiler<'alloc> {
 
     /// Reserves data in the constant pool with length of `data_len` and returns
     /// the index and the reserved buffer of data. This function makes sure the
-    /// index is aligned to 8 bytes.
+    /// index is aligned to `ALIGNMENT` bytes.
     pub fn alloc_constant_with_len(
         &mut self,
         kind: ConstantKind,
         data_len: u32,
     ) -> (ConstantTableIdx, &mut [u8], Range<usize>) {
-        // Calculate the required padding to achieve 8-byte alignment
-        let padding = (8 - (self.constants.len() % 8)) % 8;
+        // Calculate the required padding to achieve `ALIGNMENT`-byte alignment
+        let padding = (ALIGNMENT - (self.constants.len() % ALIGNMENT)) % ALIGNMENT;
 
         // Extend the constants with padding bytes
         self.constants.extend(std::iter::repeat(0).take(padding));
@@ -285,7 +288,8 @@ impl<'alloc> Compiler<'alloc> {
         kind: ConstantKind,
     ) -> ConstantTableIdx {
         let table_idx = self.constant_table.len();
-        self.constant_table.push(ConstantEntry { idx, kind });
+        self.constant_table
+            .push(ConstantEntry { idx, kind, _pad: 0 });
         ConstantTableIdx(table_idx.try_into().unwrap())
     }
 
@@ -1342,7 +1346,7 @@ pub mod serialize {
 
     const MAGIC_VALUE: u32 = 69420;
 
-    #[repr(C, align(8))]
+    #[repr(C, align(16))]
     #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
     struct Header {
         magic: u32,
@@ -1351,7 +1355,7 @@ pub mod serialize {
         is_game: u32,
     }
 
-    #[repr(C, align(8))]
+    #[repr(C, align(16))]
     #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
     struct ConstantsHeader {
         table_len: u32,
@@ -1360,7 +1364,7 @@ pub mod serialize {
         _pad: u32,
     }
 
-    #[repr(C, align(8))]
+    #[repr(C, align(16))]
     #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
     struct FunctionsHeader {
         table_len: u32,
@@ -1369,7 +1373,7 @@ pub mod serialize {
         function_code_padding: u32,
     }
 
-    #[repr(C, align(8))]
+    #[repr(C, align(16))]
     #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
     struct FunctionTableEntry {
         name_constant_idx: u32,
@@ -1378,18 +1382,18 @@ pub mod serialize {
         _pad: u32,
     }
 
-    fn pad_8(length: usize) -> (usize, usize) {
-        let new_length = (length + 7) & !7;
+    fn pad_alignment(length: usize) -> (usize, usize) {
+        let new_length = (length + (ALIGNMENT - 1)) & !(ALIGNMENT - 1);
         (new_length, new_length - length)
     }
 
     pub fn serialize<'alloc>(compiler: &Compiler<'alloc>, buf: &mut Vec<u8>) {
-        // Make sure all serializable structs have size that is aligned to 8 bytes
-        assert_eq!(size_of::<Header>() % 8, 0);
-        assert_eq!(size_of::<ConstantsHeader>() % 8, 0);
-        assert_eq!(size_of::<FunctionsHeader>() % 8, 0);
-        assert_eq!(size_of::<FunctionTableEntry>() % 8, 0);
-        assert_eq!(size_of::<ConstantEntry>() % 8, 0);
+        // Make sure all serializable structs have size that is aligned to ALIGNMENT bytes
+        assert_eq!(size_of::<Header>() % ALIGNMENT, 0);
+        assert_eq!(size_of::<ConstantsHeader>() % ALIGNMENT, 0);
+        assert_eq!(size_of::<FunctionsHeader>() % ALIGNMENT, 0);
+        assert_eq!(size_of::<FunctionTableEntry>() % ALIGNMENT, 0);
+        assert_eq!(size_of::<ConstantEntry>() % ALIGNMENT, 0);
 
         let mut header = Header {
             magic: MAGIC_VALUE,
@@ -1403,7 +1407,7 @@ pub mod serialize {
         // let (constants_table_len, constants_table_pad) =
         //     pad_8(compiler.constant_table.len() * size_of::<ConstantEntry>());
 
-        let (pool_size, pool_padding) = pad_8(compiler.constants.len());
+        let (pool_size, pool_padding) = pad_alignment(compiler.constants.len());
 
         let constants_header = ConstantsHeader {
             table_len: (compiler.constant_table.len() * size_of::<ConstantEntry>())
@@ -1424,7 +1428,7 @@ pub mod serialize {
         header.functions_offset = functions_offset;
 
         let (functions_code_size, functions_code_padding) =
-            pad_8(size_of::<FunctionTableEntry>() * compiler.functions.len());
+            pad_alignment(size_of::<FunctionTableEntry>() * compiler.functions.len());
 
         let function_header = FunctionsHeader {
             table_len: compiler.functions.len().try_into().unwrap(),
@@ -1444,12 +1448,12 @@ pub mod serialize {
                 _pad: 0,
             };
             buf.extend_from_slice(bytemuck::cast_slice(&[entry]));
-            let (padded_size, _) = pad_8(entry.size as usize);
+            let (padded_size, _) = pad_alignment(entry.size as usize);
             let padded_size: u32 = padded_size.try_into().unwrap();
             offset += padded_size;
         }
         for (_, func) in compiler.functions.iter() {
-            let (_, pad) = pad_8(func.code.buf.len());
+            let (_, pad) = pad_alignment(func.code.buf.len());
             buf.extend_from_slice(&func.code.buf);
             buf.extend(std::iter::repeat(0).take(pad));
         }
