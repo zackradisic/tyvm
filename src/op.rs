@@ -59,11 +59,14 @@ pub enum Op {
 
     Negate,
     Update,
+    SetArray,
+    Fill,
+    NewArray,
 
     Exit,
 }
 
-const OP_MAX_VAL: u8 = Op::GetGlobal as u8;
+const OP_MAX_VAL: u8 = Op::Exit as u8;
 
 impl From<u8> for Op {
     fn from(value: u8) -> Self {

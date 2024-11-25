@@ -77,7 +77,16 @@ function drawCommandsExecute(
     }
     // Clear
     case 1: {
-      // ctx.clearRect()
+      ctx.fillStyle = drawCommand.color;
+      ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+      break;
+    }
+    case 2: {
+      if (drawCommand.fillStyle === "#000") {
+        console.log("Filling with black");
+      }
+      ctx.fillStyle = drawCommand.fillStyle;
+      ctx.fillRect(drawCommand.x, drawCommand.y, drawCommand.w, drawCommand.h);
       break;
     }
   }
@@ -169,6 +178,28 @@ export const initWasm = async (
   const memBuf = new Uint8Array(memory.buffer, ptr, progBinary.length);
   memBuf.set(progBinary);
 
+  const mouseEvent =
+    (
+      vmFn: (vm: Tyvm.VMRef, eventPtr: number, len: number) => boolean,
+      vmRef: Tyvm.VMRef
+    ) =>
+    (e: MouseEvent) => {
+      const rect = (e.target as HTMLCanvasElement).getBoundingClientRect();
+      const event: Tyvm.MouseEvent = {
+        top: rect.top,
+        left: rect.left,
+        right: rect.right,
+        bottom: rect.bottom,
+        client_x: e.clientX,
+        client_y: e.clientY,
+      };
+      const event_str = new TextEncoder().encode(JSON.stringify(event));
+      const ptr = vmFns.alloc(event_str.length);
+      const mem_buf = new Uint8Array(memory.buffer, ptr, event_str.length);
+      mem_buf.set(event_str);
+      vmFn(vmRef, ptr, event_str.byteLength);
+    };
+
   wasi.initialize({
     exports: {
       _initialize: () => {
@@ -187,6 +218,20 @@ export const initWasm = async (
         let panicked = false;
         // const globalFunctionRef = get_global_function(vmState.state!.vmRef);
         if (isGame) {
+          // TODO: check if script actually exports these
+          canvasRef.current!.addEventListener(
+            "mousedown",
+            mouseEvent(vmFns.on_mouse_down, vmState.state!.vmRef)
+          );
+          canvasRef.current!.addEventListener(
+            "mouseup",
+            mouseEvent(vmFns.on_mouse_up, vmState.state!.vmRef)
+          );
+          canvasRef.current!.addEventListener(
+            "mousemove",
+            mouseEvent(vmFns.on_mouse_move, vmState.state!.vmRef)
+          );
+
           window.addEventListener("keydown", (e) => {
             const event: Tyvm.KeydownEvent = { code: e.code };
             const event_str = new TextEncoder().encode(JSON.stringify(event));
@@ -202,7 +247,9 @@ export const initWasm = async (
           const runGame = () => {
             if (panicked) return;
             try {
+              console.time("Run frame");
               run(vmState.state!.vmRef, globalFn);
+              console.timeEnd("Run frame");
             } catch (err) {
               console.error(err);
               // @ts-expect-error

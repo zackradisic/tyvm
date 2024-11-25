@@ -31,7 +31,7 @@ extern "c" fn memset(*anyopaque, c_int, usize) *anyopaque;
 
 // const TRACING: bool = true;
 const TRACING: bool = false;
-const STACKTRACING: bool = true;
+const STACKTRACING: bool = false;
 
 var rnd = std.rand.DefaultPrng.init(0);
 
@@ -80,13 +80,13 @@ pub fn new(gc: *GC, bytecode: []const u8) !VM {
     try vm.load_bytecode(bytecode);
     try vm.load_native_functions();
 
-    if (comptime TRACING) {
-        var iter = vm.functions.valueIterator();
-        while (iter.next()) |function| {
-            function.disassemble(&vm);
-            print("\n", .{});
-        }
+    // if (comptime TRACING) {
+    var iter = vm.functions.valueIterator();
+    while (iter.next()) |function| {
+        function.disassemble(&vm);
+        print("\n", .{});
     }
+    // }
 
     return vm;
 }
@@ -548,6 +548,58 @@ pub fn run_impl(self: *VM) !void {
                 }
                 const new_object = try self.update_object(self.gc, object.Object, addition.Object);
                 self.push(new_object);
+            },
+            .SetArray => {
+                const index = self.pop();
+                const value = self.peek(0);
+                const arr = self.peek(1);
+                if (index != .Number) {
+                    @panic("Third argument to `SetArray` must be a number literal.");
+                }
+                if (arr != .Array) {
+                    @panic("First argument to `SetArray` must be an array.");
+                }
+
+                const idx: u32 = @intFromFloat(@floor(index.Number));
+
+                const new_arr = try arr.Array.dupe(self.gc);
+
+                const ptr = new_arr.item_at_index_mut(idx) orelse {
+                    std.debug.panic("Index out of bounds: {d}. Length = {d}", .{ @floor(index.Number), arr.Array.len });
+                };
+                ptr.* = value;
+                _ = self.pop();
+                _ = self.pop();
+                self.push(Value.array(new_arr));
+            },
+            .Fill => {
+                const value = self.pop();
+                const arr = self.peek(0);
+                if (arr != .Array) {
+                    @panic("First argument to `Fill` must be an array.");
+                }
+                const new_arr = try arr.Array.dupe(self.gc);
+                for (new_arr.items_mutable()) |*item| {
+                    item.* = value;
+                }
+                _ = self.pop();
+                self.push(Value.array(new_arr));
+            },
+            .NewArray => {
+                const length_val = self.pop();
+                if (length_val != .Number) {
+                    @panic("Second argument to `NewArray` must be a number.");
+                }
+                const length: u32 = @intFromFloat(@floor(length_val.Number));
+                if (length == 0) {
+                    _ = self.pop();
+                    self.push(Value.array(try Array.empty_tuple(self.gc)));
+                } else {
+                    var array = try Array.new_with_capacity(self.gc, length);
+                    const initial_value = self.pop();
+                    @memset(array.items_mutable(), initial_value);
+                    self.push(Value.array(array));
+                }
             },
             .Union => {
                 const count = frame.read_u8();
@@ -1042,6 +1094,12 @@ fn call_main(self: *VM, main_name: ConstantTableIdx) !void {
 
 /// Call a function. This assumes the top of the stack has the N values for the function's arguments.
 fn call(self: *VM, arg_count: u8, fn_name: ConstantTableIdx, tail_call: bool) void {
+    {
+        const function_name_constant = self.functions.getPtr(fn_name).?.name;
+        const constant_idx = self.constant_table[function_name_constant.v].idx;
+        const function_name = self.read_constant_string(constant_idx);
+        std.debug.print("Call function: {s}\n", .{function_name.as_str()});
+    }
     // Reuse the call frame
     if (tail_call) {
         const current_call_frame = self.cur_call_frame();
@@ -1493,15 +1551,31 @@ pub const Function = struct {
                 .Update => {
                     std.debug.print("{} Update\n", .{j});
                 },
+                .SetArray => {
+                    std.debug.print("{} SetArray\n", .{j});
+                },
+                .Fill => {
+                    std.debug.print("{} Fill\n", .{j});
+                },
+                .NewArray => {
+                    std.debug.print("{} NewArray\n", .{j});
+                },
+                .Panic => {
+                    std.debug.print("{} Panic\n", .{j});
+                },
+                .Length => {
+                    std.debug.print("{} Length\n", .{j});
+                },
                 .CallNative => {
                     const count = self.read_u8(&i);
                     const name_idx = self.read_constant_table_idx(&i);
                     const str = vm.read_constant(name_idx);
                     std.debug.print("{} CallNative {s} {d}\n", .{ j, str.String.as_str(), count });
                 },
-                else => {
-                    print("UNHANDLED: {s}\n", .{@tagName(op)});
-                    @panic("Unimplemented: ");
+                .JumpGameState => {
+                    const offset = @as(u16, @intCast(self.code[i + 1])) << 8 | @as(u16, @intCast(self.code[i]));
+                    i += 2;
+                    std.debug.print("{} JumpGameState {}\n", .{ j, offset });
                 },
             }
         }
@@ -1701,6 +1775,9 @@ const Op = enum(u8) {
 
     Negate,
     Update,
+    SetArray,
+    Fill,
+    NewArray,
 
     Exit,
 };
@@ -2410,6 +2487,40 @@ const Array = struct {
         pad: u31 = 0,
     };
 
+    pub fn new_with_capacity(gc: *GC, length: u32) !*Array {
+        const alloc = gc.as_allocator();
+        var arr = try alloc.create(Array);
+        arr.* = .{
+            .ptr = null,
+            .len = length,
+            .flags = Flags{
+                .is_tuple = false,
+            },
+        };
+        gc.push_vroot(@ptrCast(&arr));
+        defer gc.pop_vroot();
+        const slc = try gc.as_allocator().alloc(Value, length);
+        arr.ptr = slc.ptr;
+        return arr;
+    }
+
+    pub fn dupe(self: *Array, gc: *GC) !*Array {
+        const alloc = gc.as_allocator();
+        var arr = try alloc.create(Array);
+        arr.* = .{
+            .ptr = null,
+            .len = self.len,
+            .flags = Flags{
+                .is_tuple = self.flags.is_tuple,
+            },
+        };
+        gc.push_vroot(@ptrCast(&arr));
+        defer gc.pop_vroot();
+        const slc = try alloc.dupe(Value, self.items());
+        arr.ptr = slc.ptr;
+        return arr;
+    }
+
     pub fn new(gc: *GC, is_tuple: bool, values: []const Value, spread: []const Value) !*Array {
         const alloc = gc.as_allocator();
         var arr = try alloc.create(Array);
@@ -2439,6 +2550,11 @@ const Array = struct {
         return self.flags.is_tuple;
     }
 
+    pub fn item_at_index_mut(self: *const Array, idx: u32) ?*Value {
+        if (idx >= self.len) return null;
+        return &self.ptr.?[idx];
+    }
+
     pub fn item_at_index(self: *const Array, idx: u32) Value {
         if (idx >= self.len) return .Undefined;
         return self.ptr.?[idx];
@@ -2458,6 +2574,7 @@ const Array = struct {
         return &[_]Value{};
     }
 
+    /// TODO: Tagged pointer so we don't allocate?
     pub fn empty_tuple(gc: *GC) !*Array {
         const tuple = try gc.as_allocator().create(Array);
         tuple.* = .{

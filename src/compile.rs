@@ -798,6 +798,24 @@ impl<'alloc> Compiler<'alloc> {
                         self.push_op(Op::Update);
                         return;
                     }
+                    "SetArray" => {
+                        assert_eq!(3, call.args.len());
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::SetArray);
+                        return;
+                    }
+                    "Fill" => {
+                        assert_eq!(2, call.args.len());
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::Fill);
+                        return;
+                    }
+                    "NewArray" => {
+                        assert_eq!(2, call.args.len());
+                        call.args.iter().for_each(|arg| self.compile_expr(arg));
+                        self.push_op(Op::NewArray);
+                        return;
+                    }
                     _ => {}
                 }
 
