@@ -8,6 +8,8 @@ pub enum Op {
     Div,
     Exp,
     Floor,
+    Min,
+    Max,
     Mod,
     Eq,
     Lte,
