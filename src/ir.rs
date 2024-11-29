@@ -122,7 +122,7 @@ impl<'ir> Object<'ir> {
     pub fn can_be_object_lit(&self) -> bool {
         self.fields.values().all(|e| e.is_comptime_known())
     }
-    pub fn try_into_object_lit(&self, arena: &'ir Arena) -> Option<ObjectLit<'ir>> {
+    pub fn try_into_object_lit(&self, _arena: &'ir Arena) -> Option<ObjectLit<'ir>> {
         if self.can_be_object_lit() {
             Some(ObjectLit {
                 fields: BTreeMap::from_iter(self.fields.iter().map(|(k, v)| (*k, *v))),

@@ -66,7 +66,7 @@ pub enum Op {
     Exit,
 }
 
-const OP_MAX_VAL: u8 = Op::Exit as u8;
+const _OP_MAX_VAL: u8 = Op::Exit as u8;
 
 impl From<u8> for Op {
     fn from(value: u8) -> Self {

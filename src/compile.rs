@@ -1,19 +1,14 @@
 use core::panic;
-use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
-use std::num::NonZeroUsize;
 use std::ops::Range;
-use std::option;
-use std::thread::panicking;
 
-use crate::common::AllocBox as Box;
 use crate::ir::{
     BooleanLiteral, Expr, GlobalDecl, LiteralExpr, NumberLiteral, ObjectLit, TupleItem, Unary,
     UnaryOperator,
 };
 use crate::op::Op;
-use crate::{common::*, ir};
+use crate::ir;
 
 pub const GLOBAL_STR: &'static str = "__tyvm_global";
 pub const MAIN_STR: &'static str = "Main";
@@ -22,7 +17,7 @@ pub const MAIN_STR_TABLE_IDX: ConstantTableIdx = ConstantTableIdx(2);
 const UNINIT_STR: &'static str = "uninitialized memory string if you see this its bad";
 
 pub trait Compile<'alloc> {
-    fn compile(&self, compiler: &mut Compiler<'alloc>) {}
+    fn compile(&self, _compiler: &mut Compiler<'alloc>) {}
 }
 
 impl<'alloc> Compile<'alloc> for &ir::Expr<'alloc> {
@@ -32,7 +27,7 @@ impl<'alloc> Compile<'alloc> for &ir::Expr<'alloc> {
 }
 
 impl<'alloc> Compile<'alloc> for () {
-    fn compile(&self, compiler: &mut Compiler<'alloc>) {}
+    fn compile(&self, _compiler: &mut Compiler<'alloc>) {}
 }
 
 impl<'alloc, F: Fn(&mut Compiler<'alloc>) -> ()> Compile<'alloc> for F {
@@ -177,7 +172,7 @@ impl<'alloc> Compiler<'alloc> {
         self.interned_strings.get(string).cloned()
     }
 
-    fn alloc_constant_object(&mut self, string: &ObjectLit<'alloc>) -> ConstantTableIdx {
+    fn alloc_constant_object(&mut self, _string: &ObjectLit<'alloc>) -> ConstantTableIdx {
         todo!()
     }
 
@@ -244,7 +239,7 @@ impl<'alloc> Compiler<'alloc> {
     }
 
     fn alloc_constant_bool(&mut self, b: bool) -> ConstantTableIdx {
-        let size = 1;
+        let _size = 1;
         let (idx, buf, _) = self.alloc_constant_with_len(ConstantKind::Boolean, 1);
         buf[0] = b as u8;
         idx
@@ -309,7 +304,7 @@ impl<'alloc> Compiler<'alloc> {
         self.cur_fn_mut().code.push_constant(constant);
     }
 
-    fn push_u32(&mut self, val: u32) {
+    fn _push_u32(&mut self, val: u32) {
         self.cur_fn_mut().code.push_u32(val);
     }
 
@@ -462,7 +457,7 @@ impl<'alloc> Compiler<'alloc> {
         for arg in &fn_decl.params {
             func.locals.push(arg.ident.name());
         }
-        let mut optional_idx: usize = 0;
+        let mut _optional_idx: usize = 0;
         for (idx, param) in fn_decl.params.iter().enumerate() {
             // One optimization here is for optional params with default values.
             //
@@ -536,7 +531,6 @@ impl<'alloc> Compiler<'alloc> {
                 self.compile_expr(expr);
                 self.push_op(Op::Negate)
             }
-            Expr::Unary(_) => todo!(),
             Expr::Any => {
                 self.push_op(Op::Any);
             }
@@ -1055,7 +1049,7 @@ impl<'alloc> Compiler<'alloc> {
             if let Some((idx, _)) = self
                 .functions
                 .get(&self.current_function_name)
-                .and_then(|f| f.locals.iter().enumerate().rev().find(|(i, l)| l == &name))
+                .and_then(|f| f.locals.iter().enumerate().rev().find(|(_i, l)| l == &name))
             {
                 return Some((Op::GetLocal, idx as u8));
             }
@@ -1348,8 +1342,6 @@ impl<'a, 'alloc> ExactSizeIterator for LocalsIter<'a, 'alloc> {
 }
 
 pub mod serialize {
-    use bytemuck::Zeroable;
-
     use super::*;
 
     const MAGIC_VALUE: u32 = 69420;

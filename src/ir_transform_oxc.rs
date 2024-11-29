@@ -385,7 +385,7 @@ impl<'input, 'ir> Transform<'ir> {
         }
     }
 
-    fn transform_expr(&self, expr: &'input ast::Expression<'input>, tail_call: bool) -> Expr<'ir> {
+    fn transform_expr(&self, expr: &'input ast::Expression<'input>, _tail_call: bool) -> Expr<'ir> {
         match expr {
             Expression::NumberLiteral(num) => {
                 Expr::NumberLiteral(self.arena.alloc(NumberLiteral { value: num.value }))
